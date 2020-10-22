@@ -43,6 +43,7 @@
 #include "isisd/isis_csm.h"
 #include "isisd/isis_adjacency.h"
 #include "isisd/isis_spf.h"
+#include "isisd/isis_spf_private.h"
 #include "isisd/isis_te.h"
 #include "isisd/isis_memory.h"
 #include "isisd/isis_mt.h"
@@ -2075,7 +2076,6 @@ int lib_interface_isis_area_tag_modify(struct nb_cb_modify_args *args)
 	struct interface *ifp;
 	struct vrf *vrf;
 	const char *area_tag, *ifname, *vrfname;
-	struct isis *isis = NULL;
 
 	if (args->event == NB_EV_VALIDATE) {
 		/* libyang doesn't like relative paths across module boundaries
@@ -2091,11 +2091,7 @@ int lib_interface_isis_area_tag_modify(struct nb_cb_modify_args *args)
 		if (!ifp)
 			return NB_OK;
 
-		isis = isis_lookup_by_vrfid(ifp->vrf_id);
-		if (isis == NULL)
-			return NB_ERR_VALIDATION;
-
-		circuit = circuit_lookup_by_ifp(ifp, isis->init_circ_list);
+		circuit = circuit_scan_by_ifp(ifp);
 		area_tag = yang_dnode_get_string(args->dnode, NULL);
 		if (circuit && circuit->area && circuit->area->area_tag
 		    && strcmp(circuit->area->area_tag, area_tag)) {
@@ -2934,5 +2930,108 @@ int lib_interface_isis_mpls_holddown_destroy(struct nb_cb_destroy_args *args)
 			ldp_sync_info->holddown = LDP_IGP_SYNC_HOLDDOWN_DEFAULT;
 		break;
 	}
+
+	return NB_OK;
+}
+
+/*
+ * XPath:
+ * /frr-interface:lib/interface/frr-isisd:isis/fast-reroute/level-1/ti-lfa/enable
+ */
+int lib_interface_isis_fast_reroute_level_1_ti_lfa_enable_modify(
+	struct nb_cb_modify_args *args)
+{
+	struct isis_area *area;
+	struct isis_circuit *circuit;
+
+	if (args->event != NB_EV_APPLY)
+		return NB_OK;
+
+	circuit = nb_running_get_entry(args->dnode, NULL, true);
+	circuit->tilfa_protection[0] = yang_dnode_get_bool(args->dnode, NULL);
+	if (circuit->tilfa_protection[0])
+		circuit->area->lfa_protected_links[0]++;
+	else {
+		assert(circuit->area->lfa_protected_links[0] > 0);
+		circuit->area->lfa_protected_links[0]--;
+	}
+
+	area = circuit->area;
+	lsp_regenerate_schedule(area, area->is_type, 0);
+
+	return NB_OK;
+}
+
+/*
+ * XPath:
+ * /frr-interface:lib/interface/frr-isisd:isis/fast-reroute/level-1/ti-lfa/node-protection
+ */
+int lib_interface_isis_fast_reroute_level_1_ti_lfa_node_protection_modify(
+	struct nb_cb_modify_args *args)
+{
+	struct isis_area *area;
+	struct isis_circuit *circuit;
+
+	if (args->event != NB_EV_APPLY)
+		return NB_OK;
+
+	circuit = nb_running_get_entry(args->dnode, NULL, true);
+	circuit->tilfa_node_protection[0] =
+		yang_dnode_get_bool(args->dnode, NULL);
+
+	area = circuit->area;
+	lsp_regenerate_schedule(area, area->is_type, 0);
+
+	return NB_OK;
+}
+
+/*
+ * XPath:
+ * /frr-interface:lib/interface/frr-isisd:isis/fast-reroute/level-2/ti-lfa/enable
+ */
+int lib_interface_isis_fast_reroute_level_2_ti_lfa_enable_modify(
+	struct nb_cb_modify_args *args)
+{
+	struct isis_area *area;
+	struct isis_circuit *circuit;
+
+	if (args->event != NB_EV_APPLY)
+		return NB_OK;
+
+	circuit = nb_running_get_entry(args->dnode, NULL, true);
+	circuit->tilfa_protection[1] = yang_dnode_get_bool(args->dnode, NULL);
+	if (circuit->tilfa_protection[1])
+		circuit->area->lfa_protected_links[1]++;
+	else {
+		assert(circuit->area->lfa_protected_links[1] > 0);
+		circuit->area->lfa_protected_links[1]--;
+	}
+
+	area = circuit->area;
+	lsp_regenerate_schedule(area, area->is_type, 0);
+
+	return NB_OK;
+}
+
+/*
+ * XPath:
+ * /frr-interface:lib/interface/frr-isisd:isis/fast-reroute/level-2/ti-lfa/node-protection
+ */
+int lib_interface_isis_fast_reroute_level_2_ti_lfa_node_protection_modify(
+	struct nb_cb_modify_args *args)
+{
+	struct isis_area *area;
+	struct isis_circuit *circuit;
+
+	if (args->event != NB_EV_APPLY)
+		return NB_OK;
+
+	circuit = nb_running_get_entry(args->dnode, NULL, true);
+	circuit->tilfa_node_protection[1] =
+		yang_dnode_get_bool(args->dnode, NULL);
+
+	area = circuit->area;
+	lsp_regenerate_schedule(area, area->is_type, 0);
+
 	return NB_OK;
 }

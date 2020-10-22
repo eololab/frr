@@ -315,15 +315,12 @@ static void bgp_process_nexthop_update(struct bgp_nexthop_cache *bnc,
 	bnc->change_flags = 0;
 
 	/* debug print the input */
-	if (BGP_DEBUG(nht, NHT)) {
-		char buf[PREFIX2STR_BUFFER];
-		prefix2str(&nhr->prefix, buf, sizeof(buf));
+	if (BGP_DEBUG(nht, NHT))
 		zlog_debug(
-			"%s(%u): Rcvd NH update %s(%u) - metric %d/%d #nhops %d/%d flags 0x%x",
-			bnc->bgp->name_pretty, bnc->bgp->vrf_id, buf,
+			"%s(%u): Rcvd NH update %pFX(%u) - metric %d/%d #nhops %d/%d flags 0x%x",
+			bnc->bgp->name_pretty, bnc->bgp->vrf_id, &nhr->prefix,
 			bnc->srte_color, nhr->metric, bnc->metric,
 			nhr->nexthop_num, bnc->nexthop_num, bnc->flags);
-	}
 
 	if (nhr->metric != bnc->metric)
 		bnc->change_flags |= BGP_NEXTHOP_METRIC_CHANGED;
@@ -454,14 +451,10 @@ void bgp_parse_nexthop_update(int command, vrf_id_t vrf_id)
 
 	bnc = bnc_find(tree, &nhr.prefix, nhr.srte_color);
 	if (!bnc) {
-		if (BGP_DEBUG(nht, NHT)) {
-			char buf[PREFIX2STR_BUFFER];
-
-			prefix2str(&nhr.prefix, buf, sizeof(buf));
+		if (BGP_DEBUG(nht, NHT))
 			zlog_debug(
-				"parse nexthop update(%s(%u)(%s)): bnc info not found",
-				buf, nhr.srte_color, bgp->name_pretty);
-		}
+				"parse nexthop update(%pFX(%u)(%s)): bnc info not found",
+				&nhr.prefix, nhr.srte_color, bgp->name_pretty);
 		return;
 	}
 
@@ -757,7 +750,7 @@ static void evaluate_paths(struct bgp_nexthop_cache *bnc)
 				    path->sub_type, path->attr, dest)) {
 				if (BGP_DEBUG(nht, NHT))
 					zlog_debug(
-						"%s: prefix %pRN (vrf %s), ignoring path due to martian or self-next-hop",
+						"%s: prefix %pBD (vrf %s), ignoring path due to martian or self-next-hop",
 						__func__, dest, bgp_path->name);
 			} else
 				bnc_is_valid_nexthop =
@@ -771,12 +764,12 @@ static void evaluate_paths(struct bgp_nexthop_cache *bnc)
 				prefix_rd2str((struct prefix_rd *)bgp_dest_get_prefix(dest->pdest),
 					buf1, sizeof(buf1));
 				zlog_debug(
-					"... eval path %d/%d %pRN RD %s %s flags 0x%x",
+					"... eval path %d/%d %pBD RD %s %s flags 0x%x",
 					afi, safi, dest, buf1,
 					bgp_path->name_pretty, path->flags);
 			} else
 				zlog_debug(
-					"... eval path %d/%d %pRN %s flags 0x%x",
+					"... eval path %d/%d %pBD %s flags 0x%x",
 					afi, safi, dest, bgp_path->name_pretty,
 					path->flags);
 		}

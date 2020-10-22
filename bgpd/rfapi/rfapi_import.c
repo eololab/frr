@@ -265,11 +265,12 @@ void rfapiCheckRefcount(struct agg_node *rn, safi_t safi, int lockoffset)
 		}
 	}
 
-	if (count_bpi + count_monitor + lockoffset != rn->lock) {
+	if (count_bpi + count_monitor + lockoffset
+	    != agg_node_get_lock_count(rn)) {
 		vnc_zlog_debug_verbose(
 			"%s: count_bpi=%d, count_monitor=%d, lockoffset=%d, rn->lock=%d",
 			__func__, count_bpi, count_monitor, lockoffset,
-			rn->lock);
+			agg_node_get_lock_count(rn));
 		assert(0);
 	}
 }
@@ -611,11 +612,8 @@ rfapiMonitorMoveShorter(struct agg_node *original_vpn_node, int lockoffset)
 
 #ifdef DEBUG_MONITOR_MOVE_SHORTER
 	{
-		char buf[PREFIX_STRLEN];
-
-		prefix2str(&original_vpn_node->p, buf, sizeof(buf));
-		vnc_zlog_debug_verbose("%s: called with node pfx=%s", __func__,
-				       buf);
+		vnc_zlog_debug_verbose("%s: called with node pfx=%pFX",
+				       __func__, &original_vpn_node->p);
 	}
 #endif
 
@@ -750,11 +748,8 @@ rfapiMonitorMoveShorter(struct agg_node *original_vpn_node, int lockoffset)
 
 #ifdef DEBUG_MONITOR_MOVE_SHORTER
 	{
-		char buf[PREFIX_STRLEN];
-
-		prefix2str(&par->p, buf, sizeof(buf));
-		vnc_zlog_debug_verbose("%s: moved to node pfx=%s", __func__,
-				       buf);
+		vnc_zlog_debug_verbose("%s: moved to node pfx=%pFX", __func__,
+				       &par->p);
 	}
 #endif
 
@@ -1555,12 +1550,9 @@ static int rfapiNhlAddNodeRoutes(
 		}
 		if (!skiplist_search(seen_nexthops, &pfx_vn, NULL)) {
 #ifdef DEBUG_RETURNED_NHL
-			char buf[PREFIX_STRLEN];
-
-			prefix2str(&pfx_vn, buf, sizeof(buf));
 			vnc_zlog_debug_verbose(
-				"%s: already put VN/nexthop %s, skip", __func__,
-				buf);
+				"%s: already put VN/nexthop %pFX, skip",
+				__func__, &pfx_vn);
 #endif
 			continue;
 		}
@@ -3633,12 +3625,9 @@ void rfapiBgpInfoFilteredImportVPN(
 		rfapiCopyUnEncap2VPN(ern->info, info_new);
 		agg_unlock_node(ern); /* undo lock in route_note_match */
 	} else {
-		char bpf[PREFIX_STRLEN];
-
-		prefix2str(&vn_prefix, bpf, sizeof(bpf));
 		/* Not a big deal, just means VPN route got here first */
-		vnc_zlog_debug_verbose("%s: no encap route for vn addr %s",
-				       __func__, bpf);
+		vnc_zlog_debug_verbose("%s: no encap route for vn addr %pFX",
+				       __func__, &vn_prefix);
 		info_new->extra->vnc.import.un_family = 0;
 	}
 
@@ -3665,7 +3654,8 @@ void rfapiBgpInfoFilteredImportVPN(
 	}
 
 	vnc_zlog_debug_verbose("%s: inserting bpi %p at prefix %pRN #%d",
-			       __func__, info_new, rn, rn->lock);
+			       __func__, info_new, rn,
+			       agg_node_get_lock_count(rn));
 
 	rfapiBgpInfoAttachSorted(rn, info_new, afi, SAFI_MPLS_VPN);
 	rfapiItBiIndexAdd(rn, info_new);
@@ -4439,13 +4429,9 @@ static void rfapiDeleteRemotePrefixesIt(
 			struct bgp_path_info *next;
 			const struct prefix *rn_p = agg_node_get_prefix(rn);
 
-			if (p && VNC_DEBUG(IMPORT_DEL_REMOTE)) {
-				char p1line[PREFIX_STRLEN];
-
-				prefix2str(p, p1line, sizeof(p1line));
-				vnc_zlog_debug_any("%s: want %s, have %pRN",
-						   __func__, p1line, rn);
-			}
+			if (p && VNC_DEBUG(IMPORT_DEL_REMOTE))
+				vnc_zlog_debug_any("%s: want %pFX, have %pRN",
+						   __func__, p, rn);
 
 			if (p && prefix_cmp(p, rn_p))
 				continue;

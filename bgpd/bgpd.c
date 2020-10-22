@@ -332,10 +332,9 @@ void bgp_router_id_zebra_bump(vrf_id_t vrf_id, const struct prefix *router_id)
 				if (bgp->established_peers == 0) {
 					if (BGP_DEBUG(zebra, ZEBRA))
 						zlog_debug(
-							"RID change : vrf %s(%u), RTR ID %s",
+							"RID change : vrf %s(%u), RTR ID %pI4",
 							bgp->name_pretty,
-							bgp->vrf_id,
-							inet_ntoa(*addr));
+							bgp->vrf_id, addr);
 					/*
 					 * if old router-id was 0x0, set flag
 					 * to use this new value
@@ -363,10 +362,9 @@ void bgp_router_id_zebra_bump(vrf_id_t vrf_id, const struct prefix *router_id)
 				if (bgp->established_peers == 0) {
 					if (BGP_DEBUG(zebra, ZEBRA))
 						zlog_debug(
-							"RID change : vrf %s(%u), RTR ID %s",
+							"RID change : vrf %s(%u), RTR ID %pI4",
 							bgp->name_pretty,
-							bgp->vrf_id,
-							inet_ntoa(*addr));
+							bgp->vrf_id, addr);
 					/*
 					 * if old router-id was 0x0, set flag
 					 * to use this new value
@@ -2740,7 +2738,6 @@ int peer_group_listen_range_del(struct peer_group *group, struct prefix *range)
 	struct listnode *node, *nnode;
 	struct peer *peer;
 	afi_t afi;
-	char buf[PREFIX2STR_BUFFER];
 
 	afi = family2afi(range->family);
 
@@ -2753,8 +2750,6 @@ int peer_group_listen_range_del(struct peer_group *group, struct prefix *range)
 	if (!prefix)
 		return BGP_ERR_DYNAMIC_NEIGHBORS_RANGE_NOT_FOUND;
 
-	prefix2str(prefix, buf, sizeof(buf));
-
 	/* Dispose off any dynamic neighbors that exist due to this listen range
 	 */
 	for (ALL_LIST_ELEMENTS(group->peer, node, nnode, peer)) {
@@ -2765,8 +2760,8 @@ int peer_group_listen_range_del(struct peer_group *group, struct prefix *range)
 		if (prefix_match(prefix, &prefix2)) {
 			if (bgp_debug_neighbor_events(peer))
 				zlog_debug(
-					"Deleting dynamic neighbor %s group %s upon delete of listen range %s",
-					peer->host, group->name, buf);
+					"Deleting dynamic neighbor %s group %s upon delete of listen range %pFX",
+					peer->host, group->name, prefix);
 			peer_delete(peer);
 		}
 	}
@@ -2983,6 +2978,8 @@ static struct bgp *bgp_create(as_t *as, const char *name,
 	}
 
 	bgp_lock(bgp);
+
+	bgp_process_queue_init(bgp);
 	bgp->heuristic_coalesce = true;
 	bgp->inst_type = inst_type;
 	bgp->vrf_id = (inst_type == BGP_INSTANCE_TYPE_DEFAULT) ? VRF_DEFAULT
@@ -3238,12 +3235,10 @@ int bgp_handle_socket(struct bgp *bgp, struct vrf *vrf, vrf_id_t old_vrf_id,
 		return bgp_check_main_socket(create, bgp);
 }
 
-/* Called from VTY commands. */
-int bgp_get(struct bgp **bgp_val, as_t *as, const char *name,
-	    enum bgp_instance_type inst_type)
+int bgp_lookup_by_as_name_type(struct bgp **bgp_val, as_t *as, const char *name,
+			       enum bgp_instance_type inst_type)
 {
 	struct bgp *bgp;
-	struct vrf *vrf = NULL;
 
 	/* Multiple instance check. */
 	if (name)
@@ -3251,7 +3246,6 @@ int bgp_get(struct bgp **bgp_val, as_t *as, const char *name,
 	else
 		bgp = bgp_get_default();
 
-	/* Already exists. */
 	if (bgp) {
 		if (bgp->as != *as) {
 			*as = bgp->as;
@@ -3261,6 +3255,27 @@ int bgp_get(struct bgp **bgp_val, as_t *as, const char *name,
 			return BGP_ERR_INSTANCE_MISMATCH;
 		*bgp_val = bgp;
 		return BGP_SUCCESS;
+	}
+	*bgp_val = NULL;
+
+	return BGP_SUCCESS;
+}
+
+/* Called from VTY commands. */
+int bgp_get(struct bgp **bgp_val, as_t *as, const char *name,
+	    enum bgp_instance_type inst_type)
+{
+	struct bgp *bgp;
+	struct vrf *vrf = NULL;
+	int ret = 0;
+
+	ret = bgp_lookup_by_as_name_type(bgp_val, as, name, inst_type);
+	switch (ret) {
+	case BGP_ERR_INSTANCE_MISMATCH:
+		return ret;
+	case BGP_SUCCESS:
+		if (*bgp_val)
+			return ret;
 	}
 
 	bgp = bgp_create(as, name, inst_type);
@@ -3488,6 +3503,9 @@ int bgp_delete(struct bgp *bgp)
 		else
 			bgp_set_evpn(bgp_get_default());
 	}
+
+	if (bgp->process_queue)
+		work_queue_free_and_null(&bgp->process_queue);
 
 	thread_master_free_unused(bm->master);
 	bgp_unlock(bgp); /* initial reference */
@@ -3754,7 +3772,6 @@ struct peer *peer_lookup_dynamic_neighbor(struct bgp *bgp, union sockunion *su)
 	struct prefix *listen_range;
 	int dncount;
 	char buf[PREFIX2STR_BUFFER];
-	char buf1[PREFIX2STR_BUFFER];
 
 	sockunion2hostprefix(su, &prefix);
 
@@ -3771,12 +3788,11 @@ struct peer *peer_lookup_dynamic_neighbor(struct bgp *bgp, union sockunion *su)
 		return NULL;
 
 	prefix2str(&prefix, buf, sizeof(buf));
-	prefix2str(listen_range, buf1, sizeof(buf1));
 
 	if (bgp_debug_neighbor_events(NULL))
 		zlog_debug(
-			"Dynamic Neighbor %s matches group %s listen range %s",
-			buf, group->name, buf1);
+			"Dynamic Neighbor %s matches group %s listen range %pFX",
+			buf, group->name, listen_range);
 
 	/* Are we within the listen limit? */
 	dncount = gbgp->dynamic_neighbors_count;
@@ -7069,8 +7085,6 @@ void bgp_master_init(struct thread_master *master, const int buffer_size)
 	bm->terminating = false;
 	bm->socket_buffer = buffer_size;
 
-	bgp_process_queue_init();
-
 	bgp_mac_init();
 	/* init the rd id space.
 	   assign 0th index in the bitfield,
@@ -7275,14 +7289,10 @@ void bgp_terminate(void)
 				bgp_notify_send(peer, BGP_NOTIFY_CEASE,
 						BGP_NOTIFY_CEASE_PEER_UNCONFIG);
 
-	if (bm->process_main_queue)
-		work_queue_free_and_null(&bm->process_main_queue);
-
 	if (bm->t_rmap_update)
 		BGP_TIMER_OFF(bm->t_rmap_update);
 
 	bgp_mac_finish();
-	bgp_evpn_mh_finish();
 }
 
 struct peer *peer_lookup_in_view(struct vty *vty, struct bgp *bgp,

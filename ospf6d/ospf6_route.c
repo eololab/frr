@@ -550,7 +550,6 @@ ospf6_route_lookup_bestmatch(struct prefix *prefix,
 static void route_table_assert(struct ospf6_route_table *table)
 {
 	struct ospf6_route *prev, *r, *next;
-	char buf[PREFIX2STR_BUFFER];
 	unsigned int link_error = 0, num = 0;
 
 	r = ospf6_route_head(table);
@@ -579,10 +578,9 @@ static void route_table_assert(struct ospf6_route_table *table)
 		 "Something has gone wrong with ospf6_route_table[%p]", table);
 	zlog_debug("table count = %d, real number = %d", table->count, num);
 	zlog_debug("DUMP START");
-	for (r = ospf6_route_head(table); r; r = ospf6_route_next(r)) {
-		prefix2str(&r->prefix, buf, sizeof(buf));
-		zlog_info("%p<-[%p]->%p : %s", r->prev, r, r->next, buf);
-	}
+	for (r = ospf6_route_head(table); r; r = ospf6_route_next(r))
+		zlog_info("%p<-[%p]->%p : %pFX", r->prev, r, r->next,
+			  &r->prefix);
 	zlog_debug("DUMP END");
 
 	assert(link_error == 0 && num == table->count);
@@ -714,7 +712,7 @@ struct ospf6_route *ospf6_route_add(struct ospf6_route *route,
 				"%s %p: route add %p cost %u: another path: prev %p, next %p node ref %u",
 				ospf6_route_table_name(table), (void *)table,
 				(void *)route, route->path.cost, (void *)prev,
-				(void *)next, node->lock);
+				(void *)next, route_node_get_lock_count(node));
 		else if (IS_OSPF6_DEBUG_ROUTE(TABLE))
 			zlog_debug("%s: route add cost %u: another path found",
 				   ospf6_route_table_name(table),

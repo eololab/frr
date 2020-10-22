@@ -2377,7 +2377,6 @@ route_map_result_t route_map_apply(struct route_map *map,
 	route_map_result_t ret = RMAP_PERMITMATCH;
 	struct route_map_index *index = NULL;
 	struct route_map_rule *set = NULL;
-	char buf[PREFIX_STRLEN];
 	bool skip_match_clause = false;
 
 	if (recursion > RMAP_RECURSION_LIMIT) {
@@ -2403,16 +2402,14 @@ route_map_result_t route_map_apply(struct route_map *map,
 		if (index) {
 			if (rmap_debug)
 				zlog_debug(
-					"Best match route-map: %s, sequence: %d for pfx: %s, result: %s",
-					map->name, index->pref,
-					prefix2str(prefix, buf, sizeof(buf)),
+					"Best match route-map: %s, sequence: %d for pfx: %pFX, result: %s",
+					map->name, index->pref, prefix,
 					route_map_cmd_result_str(match_ret));
 		} else {
 			if (rmap_debug)
 				zlog_debug(
-					"No best match sequence for pfx: %s in route-map: %s, result: %s",
-					prefix2str(prefix, buf, sizeof(buf)),
-					map->name,
+					"No best match sequence for pfx: %pFX in route-map: %s, result: %s",
+					prefix, map->name,
 					route_map_cmd_result_str(match_ret));
 			/*
 			 * No index matches this prefix. Return deny unless,
@@ -2437,9 +2434,8 @@ route_map_result_t route_map_apply(struct route_map *map,
 							  prefix, type, object);
 			if (rmap_debug) {
 				zlog_debug(
-					"Route-map: %s, sequence: %d, prefix: %s, result: %s",
-					map->name, index->pref,
-					prefix2str(prefix, buf, sizeof(buf)),
+					"Route-map: %s, sequence: %d, prefix: %pFX, result: %s",
+					map->name, index->pref, prefix,
 					route_map_cmd_result_str(match_ret));
 			}
 		} else
@@ -2549,12 +2545,10 @@ route_map_result_t route_map_apply(struct route_map *map,
 	}
 
 route_map_apply_end:
-	if (rmap_debug) {
-		zlog_debug("Route-map: %s, prefix: %s, result: %s",
-			   (map ? map->name : "null"),
-			   prefix2str(prefix, buf, sizeof(buf)),
+	if (rmap_debug)
+		zlog_debug("Route-map: %s, prefix: %pFX, result: %s",
+			   (map ? map->name : "null"), prefix,
 			   route_map_result_str(ret));
-	}
 
 	return (ret);
 }
@@ -3156,8 +3150,6 @@ DEFUN_HIDDEN(show_route_map_pfx_tbl, show_route_map_pfx_tbl_cmd,
 	struct list *rmap_index_list = NULL;
 	struct listnode *ln = NULL, *nln = NULL;
 	struct route_map_index *index = NULL;
-	struct prefix *p = NULL, *pp = NULL;
-	char buf[SU_ADDRSTRLEN], pbuf[SU_ADDRSTRLEN];
 	uint8_t len = 54;
 
 	vty_out(vty, "%s:\n", frr_protonameinst);
@@ -3171,22 +3163,13 @@ DEFUN_HIDDEN(show_route_map_pfx_tbl, show_route_map_pfx_tbl_cmd,
 				"____________________");
 			for (rn = route_top(rm_pfx_tbl4); rn;
 			     rn = route_next(rn)) {
-				p = &rn->p;
-
-				vty_out(vty, "    %s/%d (%d)\n",
-					inet_ntop(p->family, &p->u.prefix, buf,
-						  SU_ADDRSTRLEN),
-					p->prefixlen, rn->lock);
+				vty_out(vty, "    %pRN (%d)\n", rn,
+					route_node_get_lock_count(rn));
 
 				vty_out(vty, "(P) ");
 				prn = rn->parent;
 				if (prn) {
-					pp = &prn->p;
-					vty_out(vty, "%s/%d\n",
-						inet_ntop(pp->family,
-							  &pp->u.prefix, pbuf,
-							  SU_ADDRSTRLEN),
-						pp->prefixlen);
+					vty_out(vty, "%pRN\n", prn);
 				}
 
 				vty_out(vty, "\n");
@@ -3215,22 +3198,13 @@ DEFUN_HIDDEN(show_route_map_pfx_tbl, show_route_map_pfx_tbl_cmd,
 				"____________________");
 			for (rn = route_top(rm_pfx_tbl6); rn;
 			     rn = route_next(rn)) {
-				p = &rn->p;
-
-				vty_out(vty, "    %s/%d (%d)\n",
-					inet_ntop(p->family, &p->u.prefix, buf,
-						  SU_ADDRSTRLEN),
-					p->prefixlen, rn->lock);
+				vty_out(vty, "    %pRN (%d)\n", rn,
+					route_node_get_lock_count(rn));
 
 				vty_out(vty, "(P) ");
 				prn = rn->parent;
 				if (prn) {
-					pp = &prn->p;
-					vty_out(vty, "%s/%d\n",
-						inet_ntop(pp->family,
-							  &pp->u.prefix, pbuf,
-							  SU_ADDRSTRLEN),
-						pp->prefixlen);
+					vty_out(vty, "%pRN\n", prn);
 				}
 
 				vty_out(vty, "\n");

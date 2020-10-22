@@ -3465,9 +3465,8 @@ static void show_ip_ospf_interface_sub(struct vty *vty, struct ospf *ospf,
 						    "ipAddressPrefixlen",
 						    oi->address->prefixlen);
 			} else
-				vty_out(vty, "  Internet Address %s/%d,",
-					inet_ntoa(oi->address->u.prefix4),
-					oi->address->prefixlen);
+				vty_out(vty, "  Internet Address %pFX,",
+					oi->address);
 
 			/* For Vlinks, showing the peer address is
 			 * probably more informative than the local
@@ -5132,9 +5131,8 @@ static void show_ip_ospf_neighbor_detail_sub(struct vty *vty,
 				"      Graceful Restart grace period time: %d (seconds).\n",
 				nbr->gr_helper_info.recvd_grace_period);
 			vty_out(vty, "      Graceful Restart reason: %s.\n",
-				ospf_restart_reason_desc
-					[nbr->gr_helper_info
-						 .gr_restart_reason]);
+				ospf_restart_reason2str(
+					nbr->gr_helper_info.gr_restart_reason));
 		} else {
 			vty_out(vty,
 				"      Graceful Restart HELPER Status : None\n");
@@ -5143,15 +5141,14 @@ static void show_ip_ospf_neighbor_detail_sub(struct vty *vty,
 		if (nbr->gr_helper_info.rejected_reason
 		    != OSPF_HELPER_REJECTED_NONE)
 			vty_out(vty, "      Helper rejected reason: %s.\n",
-				ospf_rejected_reason_desc
-					[nbr->gr_helper_info.rejected_reason]);
+				ospf_rejected_reason2str(
+					nbr->gr_helper_info.rejected_reason));
 
 		if (nbr->gr_helper_info.helper_exit_reason
 		    != OSPF_GR_HELPER_EXIT_NONE)
 			vty_out(vty, "      Last helper exit reason: %s.\n\n",
-				ospf_exit_reason_desc
-					[nbr->gr_helper_info
-						 .helper_exit_reason]);
+				ospf_exit_reason2str(
+					nbr->gr_helper_info.helper_exit_reason));
 		else
 			vty_out(vty, "\n");
 	} else {
@@ -5165,25 +5162,24 @@ static void show_ip_ospf_neighbor_detail_sub(struct vty *vty,
 				nbr->gr_helper_info.recvd_grace_period);
 			json_object_string_add(
 				json_neigh, "grRestartReason",
-				ospf_restart_reason_desc
-					[nbr->gr_helper_info
-						 .gr_restart_reason]);
+				ospf_restart_reason2str(
+					nbr->gr_helper_info.gr_restart_reason));
 		}
 
 		if (nbr->gr_helper_info.rejected_reason
 		    != OSPF_HELPER_REJECTED_NONE)
 			json_object_string_add(
 				json_neigh, "helperRejectReason",
-				ospf_rejected_reason_desc
-					[nbr->gr_helper_info.rejected_reason]);
+				ospf_rejected_reason2str(
+					nbr->gr_helper_info.rejected_reason));
 
 		if (nbr->gr_helper_info.helper_exit_reason
 		    != OSPF_GR_HELPER_EXIT_NONE)
 			json_object_string_add(
 				json_neigh, "helperExitReason",
-				ospf_exit_reason_desc
-					[nbr->gr_helper_info
-						 .helper_exit_reason]);
+				ospf_exit_reason2str(
+					nbr->gr_helper_info
+						 .helper_exit_reason));
 	}
 
 	ospf_bfd_show_info(vty, nbr->bfd_info, json_neigh, use_json, 0);
@@ -8135,12 +8131,25 @@ DEFUN (ip_ospf_area,
 		ospf = ospf_lookup_instance(instance);
 
 	if (instance && ospf == NULL) {
+		/*
+		 * At this point we know we have received
+		 * an instance and there is no ospf instance
+		 * associated with it.  This means we are
+		 * in a situation where we have an
+		 * ospf command that is setup for a different
+		 * process(instance).  We need to safely
+		 * remove the command from ourselves and
+		 * allow the other instance(process) handle
+		 * the configuration command.
+		 */
 		params = IF_DEF_PARAMS(ifp);
 		if (OSPF_IF_PARAM_CONFIGURED(params, if_area)) {
 			UNSET_IF_PARAM(params, if_area);
 			ospf = ospf_lookup_by_vrf_id(VRF_DEFAULT);
-			ospf_interface_area_unset(ospf, ifp);
-			ospf->if_ospf_cli_count--;
+			if (ospf) {
+				ospf_interface_area_unset(ospf, ifp);
+				ospf->if_ospf_cli_count--;
+			}
 		}
 		return CMD_NOT_MY_INSTANCE;
 	}
@@ -8232,7 +8241,7 @@ DEFUN (no_ip_ospf_area,
 	else
 		ospf = ospf_lookup_instance(instance);
 
-	if (ospf == NULL)
+	if (instance && ospf == NULL)
 		return CMD_NOT_MY_INSTANCE;
 
 	argv_find(argv, argc, "area", &idx);
@@ -8262,8 +8271,11 @@ DEFUN (no_ip_ospf_area,
 		ospf_if_update_params((ifp), (addr));
 	}
 
-	ospf_interface_area_unset(ospf, ifp);
-	ospf->if_ospf_cli_count--;
+	if (ospf) {
+		ospf_interface_area_unset(ospf, ifp);
+		ospf->if_ospf_cli_count--;
+	}
+
 	return CMD_SUCCESS;
 }
 
@@ -9292,7 +9304,7 @@ static int ospf_show_gr_helper_details(struct vty *vty, struct ospf *ospf,
 
 		if (ospf->last_exit_reason != OSPF_GR_HELPER_EXIT_NONE) {
 			vty_out(vty, " Last Helper exit Reason :%s\n",
-				ospf_exit_reason_desc[ospf->last_exit_reason]);
+				ospf_exit_reason2str(ospf->last_exit_reason));
 		}
 
 		if (ospf->active_restarter_cnt)
@@ -9321,7 +9333,7 @@ static int ospf_show_gr_helper_details(struct vty *vty, struct ospf *ospf,
 		if (ospf->last_exit_reason != OSPF_GR_HELPER_EXIT_NONE)
 			json_object_string_add(
 				json_vrf, "LastExitReason",
-				ospf_exit_reason_desc[ospf->last_exit_reason]);
+				ospf_exit_reason2str(ospf->last_exit_reason));
 
 		if (ospf->active_restarter_cnt)
 			json_object_int_add(json_vrf, "activeRestarterCnt",
@@ -9386,9 +9398,9 @@ static int ospf_show_gr_helper_details(struct vty *vty, struct ospf *ospf,
 							.t_grace_timer));
 					vty_out(vty,
 						"   Graceful Restart reason: %s.\n\n",
-						ospf_restart_reason_desc
-							[nbr->gr_helper_info
-							.gr_restart_reason]);
+						ospf_restart_reason2str(
+							nbr->gr_helper_info
+							.gr_restart_reason));
 					cnt++;
 				} else {
 					json_neigh = json_object_new_object();
@@ -9416,9 +9428,9 @@ static int ospf_show_gr_helper_details(struct vty *vty, struct ospf *ospf,
 							.t_grace_timer));
 					json_object_string_add(
 						json_neigh, "restartReason",
-						ospf_restart_reason_desc
-							[nbr->gr_helper_info
-							.gr_restart_reason]);
+						ospf_restart_reason2str(
+							nbr->gr_helper_info
+							.gr_restart_reason));
 					json_object_object_add(
 						json_neighbors,
 						inet_ntoa(nbr->src),

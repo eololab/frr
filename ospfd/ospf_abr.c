@@ -638,19 +638,23 @@ static int ospf_abr_translate_nssa(struct ospf_area *area, struct ospf_lsa *lsa)
 	}
 
 	/* try find existing AS-External LSA for this prefix */
-
 	old = ospf_external_info_find_lsa(area->ospf, &p);
 
-	if (old) {
-		/* Do not continue if type 5 LSA not approved */
-		if (!CHECK_FLAG(old->flags, OSPF_LSA_APPROVED)) {
+	if (CHECK_FLAG(lsa->flags, OSPF_LSA_IN_MAXAGE)) {
+		/* if type-7 is removed, remove old translated type-5 lsa */
+		if (old) {
+			UNSET_FLAG(old->flags, OSPF_LSA_APPROVED);
 			if (IS_DEBUG_OSPF_NSSA)
 				zlog_debug(
-					"ospf_abr_translate_nssa(): LSA Id %s type 5 is not approved",
+					"ospf_abr_translate_nssa(): remove old translated LSA id %s",
 					inet_ntoa(old->data->id));
-			return 1;
 		}
+		/* if type-7 is removed and type-5 does not exist, do not
+		 * originate */
+		return 1;
+	}
 
+	if (old && CHECK_FLAG(old->flags, OSPF_LSA_APPROVED)) {
 		if (IS_DEBUG_OSPF_NSSA)
 			zlog_debug(
 				"ospf_abr_translate_nssa(): found old translated LSA Id %s, refreshing",
@@ -736,13 +740,9 @@ void ospf_abr_announce_network_to_area(struct prefix_ipv4 *p, uint32_t cost,
 			lsa = ospf_lsa_refresh(area->ospf, old);
 
 			if (!lsa) {
-				char buf[PREFIX2STR_BUFFER];
-
-				prefix2str((struct prefix *)p, buf,
-					   sizeof(buf));
 				flog_warn(EC_OSPF_LSA_MISSING,
-					  "%s: Could not refresh %s to %s",
-					  __func__, buf,
+					  "%s: Could not refresh %pFX to %s",
+					  __func__, (struct prefix *)p,
 					  inet_ntoa(area->area_id));
 				return;
 			}
@@ -758,12 +758,10 @@ void ospf_abr_announce_network_to_area(struct prefix_ipv4 *p, uint32_t cost,
 		/* This will flood through area. */
 
 		if (!lsa) {
-			char buf[PREFIX2STR_BUFFER];
-
-			prefix2str((struct prefix *)p, buf, sizeof(buf));
 			flog_warn(EC_OSPF_LSA_MISSING,
-				  "%s: Could not originate %s to %s", __func__,
-				  buf, inet_ntoa(area->area_id));
+				  "%s: Could not originate %pFX to %s",
+				  __func__, (struct prefix *)p,
+				  inet_ntoa(area->area_id));
 			return;
 		}
 
@@ -868,16 +866,16 @@ static void ospf_abr_announce_network(struct ospf *ospf, struct prefix_ipv4 *p,
 		if (!ospf_abr_should_accept(p, area)) {
 			if (IS_DEBUG_OSPF_EVENT)
 				zlog_debug(
-					"ospf_abr_announce_network(): prefix %s/%d was denied by import-list",
-					inet_ntoa(p->prefix), p->prefixlen);
+					"ospf_abr_announce_network(): prefix %pFX was denied by import-list",
+					p);
 			continue;
 		}
 
 		if (!ospf_abr_plist_in_check(area, or, p)) {
 			if (IS_DEBUG_OSPF_EVENT)
 				zlog_debug(
-					"ospf_abr_announce_network(): prefix %s/%d was denied by prefix-list",
-					inet_ntoa(p->prefix), p->prefixlen);
+					"ospf_abr_announce_network(): prefix %pFX was denied by prefix-list",
+					p);
 			continue;
 		}
 
@@ -893,8 +891,8 @@ static void ospf_abr_announce_network(struct ospf *ospf, struct prefix_ipv4 *p,
 		if (or->path_type == OSPF_PATH_INTER_AREA) {
 			if (IS_DEBUG_OSPF_EVENT)
 				zlog_debug(
-					"ospf_abr_announce_network(): this is inter-area route to %s/%d",
-					inet_ntoa(p->prefix), p->prefixlen);
+					"ospf_abr_announce_network(): this is inter-area route to %pFX",
+					p);
 
 			if (!OSPF_IS_AREA_BACKBONE(area))
 				ospf_abr_announce_network_to_area(p, or->cost,
@@ -904,8 +902,8 @@ static void ospf_abr_announce_network(struct ospf *ospf, struct prefix_ipv4 *p,
 		if (or->path_type == OSPF_PATH_INTRA_AREA) {
 			if (IS_DEBUG_OSPF_EVENT)
 				zlog_debug(
-					"ospf_abr_announce_network(): this is intra-area route to %s/%d",
-					inet_ntoa(p->prefix), p->prefixlen);
+					"ospf_abr_announce_network(): this is intra-area route to %pFX",
+					p);
 			if ((range = ospf_area_range_match(or_area, p))
 			    && !ospf_area_is_transit(area))
 				ospf_abr_update_aggregate(range, or, area);
@@ -1114,12 +1112,10 @@ static void ospf_abr_announce_rtr_to_area(struct prefix_ipv4 *p, uint32_t cost,
 		} else
 			lsa = ospf_summary_asbr_lsa_originate(p, cost, area);
 		if (!lsa) {
-			char buf[PREFIX2STR_BUFFER];
-
-			prefix2str((struct prefix *)p, buf, sizeof(buf));
 			flog_warn(EC_OSPF_LSA_MISSING,
-				  "%s: Could not refresh/originate %s to %s",
-				  __func__, buf, inet_ntoa(area->area_id));
+				  "%s: Could not refresh/originate %pFX to %s",
+				  __func__, (struct prefix *)p,
+				  inet_ntoa(area->area_id));
 			return;
 		}
 

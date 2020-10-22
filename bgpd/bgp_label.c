@@ -215,7 +215,6 @@ void bgp_reg_dereg_for_label(struct bgp_dest *dest, struct bgp_path_info *pi,
 	int command;
 	uint16_t flags = 0;
 	size_t flags_pos = 0;
-	char addr[PREFIX_STRLEN];
 
 	p = bgp_dest_get_prefix(dest);
 	local_label = &(dest->local_label);
@@ -242,11 +241,11 @@ void bgp_reg_dereg_for_label(struct bgp_dest *dest, struct bgp_path_info *pi,
 			 * always takes precedence over auto-assigned labels.
 			 */
 			if (!have_label_to_reg) {
-				if (BGP_DEBUG(labelpool, LABELPOOL)) {
-					prefix2str(p, addr, PREFIX_STRLEN);
-					zlog_debug("%s: Requesting label from LP for %s",
-						 __func__, addr);
-				}
+				if (BGP_DEBUG(labelpool, LABELPOOL))
+					zlog_debug(
+						"%s: Requesting label from LP for %pFX",
+						__func__, p);
+
 				/* bgp_reg_for_label_callback() will call back
 				 * __func__ when it gets a label from the pool.
 				 * This means we'll never register FECs without
@@ -422,8 +421,8 @@ int bgp_nlri_parse_label(struct peer *peer, struct attr *attr,
 				  */
 				flog_err(
 					EC_BGP_UPDATE_RCV,
-					"%s: IPv4 labeled-unicast NLRI is multicast address %s, ignoring",
-					peer->host, inet_ntoa(p.u.prefix4));
+					"%s: IPv4 labeled-unicast NLRI is multicast address %pI4, ignoring",
+					peer->host, &p.u.prefix4);
 				continue;
 			}
 		}

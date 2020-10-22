@@ -50,26 +50,26 @@
 #include "ospfd/ospf_ism.h"
 #include "ospfd/ospf_gr_helper.h"
 
-const char *ospf_exit_reason_desc[] = {
+static const char * const ospf_exit_reason_desc[] = {
 	"Unknown reason",
 	"Helper inprogress",
 	"Topology Change",
-	"Grace timer expairy",
+	"Grace timer expiry",
 	"Successful graceful restart",
 };
 
-const char *ospf_restart_reason_desc[] = {
+static const char * const ospf_restart_reason_desc[] = {
 	"Unknown restart",
 	"Software restart",
 	"Software reload/upgrade",
 	"Switch to redundant control processor",
 };
 
-const char *ospf_rejected_reason_desc[] = {
+static const char * const ospf_rejected_reason_desc[] = {
 	"Unknown reason",
 	"Helper support disabled",
 	"Neighbour is not in FULL state",
-	"Supports only planned restart but received for unplanned",
+	"Supports only planned restart but received unplanned",
 	"Topo change due to change in lsa rxmt list",
 	"LSA age is more than Grace interval",
 };
@@ -115,6 +115,39 @@ static void ospf_enable_rtr_hash_destroy(struct ospf *ospf)
 	hash_clean(ospf->enable_rtr_list, ospf_disable_rtr_hash_free);
 	hash_free(ospf->enable_rtr_list);
 	ospf->enable_rtr_list = NULL;
+}
+
+/*
+ * GR exit reason strings
+ */
+const char *ospf_exit_reason2str(unsigned int reason)
+{
+	if (reason < array_size(ospf_exit_reason_desc))
+		return(ospf_exit_reason_desc[reason]);
+	else
+		return "Invalid reason";
+}
+
+/*
+ * GR restart reason strings
+ */
+const char *ospf_restart_reason2str(unsigned int reason)
+{
+	if (reason < array_size(ospf_restart_reason_desc))
+		return(ospf_restart_reason_desc[reason]);
+	else
+		return "Invalid reason";
+}
+
+/*
+ * GR rejected reason strings
+ */
+const char *ospf_rejected_reason2str(unsigned int reason)
+{
+	if (reason < array_size(ospf_rejected_reason_desc))
+		return(ospf_rejected_reason_desc[reason]);
+	else
+		return "Invalid reason";
 }
 
 /*
@@ -200,12 +233,38 @@ static int ospf_extract_grace_lsa_fields(struct ospf_lsa *lsa,
 
 	lsah = (struct lsa_header *)lsa->data;
 
-	length = ntohs(lsah->length) - OSPF_LSA_HEADER_SIZE;
+	length = ntohs(lsah->length);
+
+	/* Check LSA len */
+	if (length <= OSPF_LSA_HEADER_SIZE) {
+		if (IS_DEBUG_OSPF_GR_HELPER)
+			zlog_debug("%s: Malformed packet: Invalid LSA len:%d",
+				   __func__, length);
+		return OSPF_GR_FAILURE;
+	}
+
+	length -= OSPF_LSA_HEADER_SIZE;
 
 	for (tlvh = TLV_HDR_TOP(lsah); sum < length;
 	     tlvh = TLV_HDR_NEXT(tlvh)) {
+
+		/* Check TLV len against overall LSA */
+		if (sum + TLV_SIZE(tlvh) > length) {
+			if (IS_DEBUG_OSPF_GR_HELPER)
+				zlog_debug("%s: Malformed packet: Invalid TLV len:%zu",
+					   __func__, TLV_SIZE(tlvh));
+			return OSPF_GR_FAILURE;
+		}
+
 		switch (ntohs(tlvh->type)) {
 		case GRACE_PERIOD_TYPE:
+			if (TLV_SIZE(tlvh) <
+			    sizeof(struct grace_tlv_graceperiod)) {
+				zlog_debug("%s: Malformed packet: Invalid grace TLV len:%zu",
+					   __func__, TLV_SIZE(tlvh));
+				return OSPF_GR_FAILURE;
+			}
+
 			grace_period = (struct grace_tlv_graceperiod *)tlvh;
 			*interval = ntohl(grace_period->interval);
 			sum += TLV_SIZE(tlvh);
@@ -216,6 +275,13 @@ static int ospf_extract_grace_lsa_fields(struct ospf_lsa *lsa,
 				return OSPF_GR_FAILURE;
 			break;
 		case RESTART_REASON_TYPE:
+			if (TLV_SIZE(tlvh) <
+			    sizeof(struct grace_tlv_restart_reason)) {
+				zlog_debug("%s: Malformed packet: Invalid reason TLV len:%zu",
+					   __func__, TLV_SIZE(tlvh));
+				return OSPF_GR_FAILURE;
+			}
+
 			gr_reason = (struct grace_tlv_restart_reason *)tlvh;
 			*reason = gr_reason->reason;
 			sum += TLV_SIZE(tlvh);
@@ -224,6 +290,13 @@ static int ospf_extract_grace_lsa_fields(struct ospf_lsa *lsa,
 				return OSPF_GR_FAILURE;
 			break;
 		case RESTARTER_IP_ADDR_TYPE:
+			if (TLV_SIZE(tlvh) <
+			    sizeof(struct grace_tlv_restart_addr)) {
+				zlog_debug("%s: Malformed packet: Invalid addr TLV len:%zu",
+					   __func__, TLV_SIZE(tlvh));
+				return OSPF_GR_FAILURE;
+			}
+
 			restart_addr = (struct grace_tlv_restart_addr *)tlvh;
 			addr->s_addr = restart_addr->addr.s_addr;
 			sum += TLV_SIZE(tlvh);
@@ -306,7 +379,8 @@ int ospf_process_grace_lsa(struct ospf *ospf, struct ospf_lsa *lsa,
 		zlog_debug(
 			"%s, Grace LSA received from %s, grace interval:%u, restartreason :%s",
 			__PRETTY_FUNCTION__, inet_ntoa(restart_addr),
-			grace_interval, ospf_restart_reason_desc[restart_reason]);
+			grace_interval,
+			ospf_restart_reason2str(restart_reason));
 
 	/* Incase of broadcast links, if RESTARTER is DR_OTHER,
 	 * grace LSA might be received from DR, so need to get
@@ -524,7 +598,7 @@ void ospf_helper_handle_topo_chg(struct ospf *ospf, struct ospf_lsa *lsa)
 	if (!ospf->active_restarter_cnt)
 		return;
 
-	/* Topo change not required to be hanlded if strict
+	/* Topo change not required to be handled if strict
 	 * LSA check is disbaled for this router.
 	 */
 	if (!ospf->strict_lsa_check)
@@ -598,7 +672,7 @@ void ospf_gr_helper_exit(struct ospf_neighbor *nbr,
 	if (IS_DEBUG_OSPF_GR_HELPER)
 		zlog_debug("%s, Exiting from HELPER support to %s, due to %s",
 			   __PRETTY_FUNCTION__, inet_ntoa(nbr->src),
-			   ospf_exit_reason_desc[reason]);
+			   ospf_exit_reason2str(reason));
 
 	/* Reset helper status*/
 	nbr->gr_helper_info.gr_helper_status = OSPF_GR_NOT_HELPER;
@@ -929,14 +1003,36 @@ static void show_ospf_grace_lsa_info(struct vty *vty, struct ospf_lsa *lsa)
 
 	lsah = (struct lsa_header *)lsa->data;
 
-	length = ntohs(lsah->length) - OSPF_LSA_HEADER_SIZE;
+	length = ntohs(lsah->length);
+
+	if (length <= OSPF_LSA_HEADER_SIZE) {
+		vty_out(vty, "%% Invalid LSA length: %d\n", length);
+		return;
+	}
+
+	length -= OSPF_LSA_HEADER_SIZE;
 
 	vty_out(vty, "  TLV info:\n");
 
 	for (tlvh = TLV_HDR_TOP(lsah); sum < length;
 	     tlvh = TLV_HDR_NEXT(tlvh)) {
+		/* Check TLV len */
+		if (sum + TLV_SIZE(tlvh) > length) {
+			vty_out(vty, "%% Invalid TLV length: %zu\n",
+				TLV_SIZE(tlvh));
+			return;
+		}
+
 		switch (ntohs(tlvh->type)) {
 		case GRACE_PERIOD_TYPE:
+			if (TLV_SIZE(tlvh) <
+			    sizeof(struct grace_tlv_graceperiod)) {
+				vty_out(vty,
+					"%% Invalid grace TLV length %zu\n",
+					TLV_SIZE(tlvh));
+				return;
+			}
+
 			gracePeriod = (struct grace_tlv_graceperiod *)tlvh;
 			sum += TLV_SIZE(tlvh);
 
@@ -944,13 +1040,29 @@ static void show_ospf_grace_lsa_info(struct vty *vty, struct ospf_lsa *lsa)
 				ntohl(gracePeriod->interval));
 			break;
 		case RESTART_REASON_TYPE:
+			if (TLV_SIZE(tlvh) <
+			    sizeof(struct grace_tlv_restart_reason)) {
+				vty_out(vty,
+					"%% Invalid reason TLV length %zu\n",
+					TLV_SIZE(tlvh));
+				return;
+			}
+
 			grReason = (struct grace_tlv_restart_reason *)tlvh;
 			sum += TLV_SIZE(tlvh);
 
 			vty_out(vty, "   Restart reason:%s\n",
-				ospf_restart_reason_desc[grReason->reason]);
+				ospf_restart_reason2str(grReason->reason));
 			break;
 		case RESTARTER_IP_ADDR_TYPE:
+			if (TLV_SIZE(tlvh) <
+			    sizeof(struct grace_tlv_restart_addr)) {
+				vty_out(vty,
+					"%% Invalid addr TLV length %zu\n",
+					TLV_SIZE(tlvh));
+				return;
+			}
+
 			restartAddr = (struct grace_tlv_restart_addr *)tlvh;
 			sum += TLV_SIZE(tlvh);
 
@@ -958,6 +1070,9 @@ static void show_ospf_grace_lsa_info(struct vty *vty, struct ospf_lsa *lsa)
 				inet_ntoa(restartAddr->addr));
 			break;
 		default:
+			vty_out(vty, "   Unknown TLV type %d\n",
+				ntohs(tlvh->type));
+
 			break;
 		}
 	}

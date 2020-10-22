@@ -60,14 +60,9 @@ void sharp_nh_tracker_dump(struct vty *vty)
 	struct listnode *node;
 	struct sharp_nh_tracker *nht;
 
-	for (ALL_LIST_ELEMENTS_RO(sg.nhs, node, nht)) {
-		char buf[PREFIX_STRLEN];
-
-		vty_out(vty, "%s: Nexthops: %u Updates: %u\n",
-			prefix2str(&nht->p, buf, sizeof(buf)),
-			nht->nhop_num,
-			nht->updates);
-	}
+	for (ALL_LIST_ELEMENTS_RO(sg.nhs, node, nht))
+		vty_out(vty, "%pFX: Nexthops: %u Updates: %u\n", &nht->p,
+			nht->nhop_num, nht->updates);
 }
 
 PREDECL_RBTREE_UNIQ(sharp_nhg_rb);
@@ -77,7 +72,8 @@ struct sharp_nhg {
 
 	uint32_t id;
 
-	char name[256];
+#define NHG_NAME_LEN 256
+	char name[NHG_NAME_LEN];
 
 	bool installed;
 };
@@ -95,7 +91,7 @@ struct sharp_nhg_rb_head nhg_head;
 static int sharp_nhg_compare_func(const struct sharp_nhg *a,
 				  const struct sharp_nhg *b)
 {
-	return strncmp(a->name, b->name, strlen(a->name));
+	return strncmp(a->name, b->name, NHG_NAME_LEN);
 }
 
 DECLARE_RBTREE_UNIQ(sharp_nhg_rb, struct sharp_nhg, mylistitem,
