@@ -658,6 +658,125 @@ def test_evpn_mac():
         assertmsg = '"{}" remote MAC content incorrect'.format(tor.name)
         assert result is None, assertmsg
 
+def check_df_role(dut, esi, role):
+    '''
+    Return error string if the df role on the dut is different
+    '''
+    es_json = dut.vtysh_cmd("show evpn es %s json" % esi)
+    es = json.loads(es_json)
+
+    if not es:
+        return "esi %s not found" % esi
+
+    flags = es.get("flags", [])
+    curr_role = "nonDF" if "nonDF" in flags else "DF"
+
+    if curr_role != role:
+        return "%s is %s for %s" % (dut.name, curr_role, esi)
+
+    return None
+
+def test_evpn_df():
+    '''
+    1. Check the DF role on all the PEs on rack-1.
+    2. Increase the DF preference on the non-DF and check if it becomes
+       the DF winner.
+    '''
+
+    tgen = get_topogen()
+
+    if tgen.routers_have_failure():
+        pytest.skip(tgen.errors)
+
+    # We will run the tests on just one ES
+    esi = host_es_map.get("hostd11")
+    intf = "hostbond1"
+
+    tors = []
+    tors.append(tgen.gears["torm11"])
+    tors.append(tgen.gears["torm12"])
+    df_node = "torm11"
+
+    # check roles on rack-1
+    for tor in tors:
+        role = "DF" if tor.name == df_node else "nonDF"
+        test_fn = partial(check_df_role, tor, esi, role)
+        _, result = topotest.run_and_expect(test_fn, None, count=20, wait=3)
+        assertmsg = '"{}" DF role incorrect'.format(tor.name)
+        assert result is None, assertmsg
+
+    # change df preference on the nonDF to make it the df
+    torm12 = tgen.gears["torm12"]
+    torm12.vtysh_cmd("conf\ninterface %s\nevpn mh es-df-pref %d" % (intf, 60000))
+    df_node = "torm12"
+
+    # re-check roles on rack-1; we should have a new winner
+    for tor in tors:
+        role = "DF" if tor.name == df_node else "nonDF"
+        test_fn = partial(check_df_role, tor, esi, role)
+        _, result = topotest.run_and_expect(test_fn, None, count=20, wait=3)
+        assertmsg = '"{}" DF role incorrect'.format(tor.name)
+        assert result is None, assertmsg
+
+    # tgen.mininet_cli()
+
+def check_protodown_rc(dut, protodown_rc):
+    '''
+    check if specified protodown reason code is set
+    '''
+
+    out = dut.vtysh_cmd("show evpn json")
+
+    evpn_js = json.loads(out)
+    tmp_rc = evpn_js.get("protodownReasons", [])
+
+    if protodown_rc:
+        if protodown_rc not in tmp_rc:
+            return "protodown %s missing in %s" % (protodown_rc, tmp_rc)
+    else:
+        if tmp_rc:
+            return "unexpected protodown rc %s" % (tmp_rc)
+
+    return None
+
+def test_evpn_uplink_tracking():
+    '''
+    1. Wait for access ports to come out of startup-delay
+    2. disable uplinks and check if access ports have been protodowned
+    3. enable uplinks and check if access ports have been moved out
+       of protodown
+    '''
+
+    tgen = get_topogen()
+
+    dut_name = "torm11"
+    dut = tgen.gears[dut_name]
+
+    # wait for protodown rc to clear after startup
+    test_fn = partial(check_protodown_rc, dut, None)
+    _, result = topotest.run_and_expect(test_fn, None, count=20, wait=3)
+    assertmsg = '"{}" protodown rc incorrect'.format(dut_name)
+    assert result is None, assertmsg
+
+    # disable the uplinks
+    dut.run("ip link set %s-eth0 down" % dut_name)
+    dut.run("ip link set %s-eth1 down" % dut_name)
+
+    # check if the access ports have been protodowned
+    test_fn = partial(check_protodown_rc, dut, "uplinkDown")
+    _, result = topotest.run_and_expect(test_fn, None, count=20, wait=3)
+    assertmsg = '"{}" protodown rc incorrect'.format(dut_name)
+    assert result is None, assertmsg
+
+    # enable the uplinks
+    dut.run("ip link set %s-eth0 up" % dut_name)
+    dut.run("ip link set %s-eth1 up" % dut_name)
+
+    # check if the access ports have been moved out of protodown
+    test_fn = partial(check_protodown_rc, dut, None)
+    _, result = topotest.run_and_expect(test_fn, None, count=20, wait=3)
+    assertmsg = '"{}" protodown rc incorrect'.format(dut_name)
+    assert result is None, assertmsg
 
 if __name__ == "__main__":
     args = ["-s"] + sys.argv[1:]

@@ -2390,6 +2390,7 @@ static void bgp_encode_pbr_rule_action(struct stream *s,
 {
 	struct prefix pfx;
 	uint8_t fam = AF_INET;
+	char ifname[INTERFACE_NAMSIZ];
 
 	if (pbra->nh.type == NEXTHOP_TYPE_IPV6)
 		fam = AF_INET6;
@@ -2431,7 +2432,7 @@ static void bgp_encode_pbr_rule_action(struct stream *s,
 	stream_put(s, &pfx.u.prefix, prefix_blen(&pfx));
 
 	stream_putw(s, 0);  /* dst port */
-
+	stream_putc(s, 0);  /* dsfield */
 	/* if pbr present, fwmark is not used */
 	if (pbr)
 		stream_putl(s, 0);
@@ -2440,7 +2441,8 @@ static void bgp_encode_pbr_rule_action(struct stream *s,
 
 	stream_putl(s, pbra->table_id);
 
-	stream_putl(s, 0); /* ifindex unused */
+	memset(ifname, 0, sizeof(ifname));
+	stream_put(s, ifname, INTERFACE_NAMSIZ); /* ifname unused */
 }
 
 static void bgp_encode_pbr_ipset_match(struct stream *s,
@@ -2545,6 +2547,7 @@ static int bgp_zebra_process_local_es_add(ZAPI_CALLBACK_ARGS)
 	char buf[ESI_STR_LEN];
 	struct in_addr originator_ip;
 	uint8_t active;
+	uint16_t df_pref;
 
 	bgp = bgp_lookup_by_vrf_id(vrf_id);
 	if (!bgp)
@@ -2554,13 +2557,15 @@ static int bgp_zebra_process_local_es_add(ZAPI_CALLBACK_ARGS)
 	stream_get(&esi, s, sizeof(esi_t));
 	originator_ip.s_addr = stream_get_ipv4(s);
 	active = stream_getc(s);
+	df_pref = stream_getw(s);
 
 	if (BGP_DEBUG(zebra, ZEBRA))
-		zlog_debug("Rx add ESI %s originator-ip %pI4 active %u",
-			   esi_to_str(&esi, buf, sizeof(buf)), &originator_ip,
-			   active);
+		zlog_debug(
+			"Rx add ESI %s originator-ip %pI4 active %u df_pref %u",
+			esi_to_str(&esi, buf, sizeof(buf)),
+			&originator_ip, active, df_pref);
 
-	bgp_evpn_local_es_add(bgp, &esi, originator_ip, active);
+	bgp_evpn_local_es_add(bgp, &esi, originator_ip, active, df_pref);
 
 	return 0;
 }

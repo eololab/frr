@@ -1051,7 +1051,7 @@ static int nl_batch_read_resp(struct nl_batch *bth)
 {
 	struct nlmsghdr *h;
 	struct sockaddr_nl snl;
-	struct msghdr msg;
+	struct msghdr msg = {};
 	int status, seq;
 	const struct nlsock *nl;
 	struct zebra_dplane_ctx *ctx;
@@ -1321,6 +1321,7 @@ static enum netlink_msg_status nl_put_msg(struct nl_batch *bth,
 	case DPLANE_OP_SYS_ROUTE_DELETE:
 	case DPLANE_OP_ROUTE_NOTIFY:
 	case DPLANE_OP_LSP_NOTIFY:
+	case DPLANE_OP_BR_PORT_UPDATE:
 		return FRR_NETLINK_SUCCESS;
 
 	case DPLANE_OP_NONE:
@@ -1501,7 +1502,7 @@ void kernel_init(struct zebra_ns *zns)
 
 void kernel_terminate(struct zebra_ns *zns, bool complete)
 {
-	THREAD_READ_OFF(zns->t_netlink);
+	thread_cancel(&zns->t_netlink);
 
 	if (zns->netlink.sock >= 0) {
 		close(zns->netlink.sock);

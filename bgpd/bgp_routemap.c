@@ -3695,9 +3695,22 @@ static void bgp_route_map_process_peer(const char *rmap_name,
 	if (filter->usmap.name && (strcmp(rmap_name, filter->usmap.name) == 0))
 		filter->usmap.map = map;
 
+	if (filter->advmap.aname
+	    && (strcmp(rmap_name, filter->advmap.aname) == 0)) {
+		filter->advmap.amap = map;
+	}
+
+	if (filter->advmap.cname
+	    && (strcmp(rmap_name, filter->advmap.cname) == 0)) {
+		filter->advmap.cmap = map;
+	}
+
 	if (peer->default_rmap[afi][safi].name
 	    && (strcmp(rmap_name, peer->default_rmap[afi][safi].name) == 0))
 		peer->default_rmap[afi][safi].map = map;
+
+	/* Notify BGP conditional advertisement scanner percess */
+	peer->advmap_config_change[afi][safi] = true;
 }
 
 static void bgp_route_map_update_peer_group(const char *rmap_name,
@@ -3746,6 +3759,7 @@ static void bgp_route_map_process_update(struct bgp *bgp, const char *rmap_name,
 					 int route_update)
 {
 	int i;
+	bool matched;
 	afi_t afi;
 	safi_t safi;
 	struct peer *peer;
@@ -3845,16 +3859,35 @@ static void bgp_route_map_process_update(struct bgp *bgp, const char *rmap_name,
 			if (!aggregate)
 				continue;
 
-			if (!aggregate->rmap.name
-			    || (strcmp(rmap_name, aggregate->rmap.name) != 0))
-				continue;
+			matched = false;
 
-			if (!aggregate->rmap.map)
-				route_map_counter_increment(map);
+			/* Update suppress map pointer. */
+			if (aggregate->suppress_map_name
+			    && strmatch(aggregate->suppress_map_name,
+					rmap_name)) {
+				if (aggregate->rmap.map == NULL)
+					route_map_counter_increment(map);
 
-			aggregate->rmap.map = map;
+				aggregate->suppress_map = map;
 
-			if (route_update) {
+				bgp_aggregate_toggle_suppressed(
+					aggregate, bgp, bgp_dest_get_prefix(bn),
+					afi, safi, false);
+
+				matched = true;
+			}
+
+			if (aggregate->rmap.name
+			    && strmatch(rmap_name, aggregate->rmap.name)) {
+				if (aggregate->rmap.map == NULL)
+					route_map_counter_increment(map);
+
+				aggregate->rmap.map = map;
+
+				matched = true;
+			}
+
+			if (matched && route_update) {
 				const struct prefix *bn_p =
 					bgp_dest_get_prefix(bn);
 

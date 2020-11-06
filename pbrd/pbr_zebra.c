@@ -59,6 +59,11 @@ struct pbr_interface *pbr_if_new(struct interface *ifp)
 	return pbr_ifp;
 }
 
+void pbr_if_del(struct interface *ifp)
+{
+	XFREE(MTYPE_PBR_INTERFACE, ifp->info);
+}
+
 /* Inteface addition message from zebra. */
 int pbr_ifp_create(struct interface *ifp)
 {
@@ -408,10 +413,10 @@ static int pbr_zebra_nexthop_update(ZAPI_CALLBACK_ARGS)
 
 		for (i = 0; i < nhr.nexthop_num; i++) {
 			DEBUGD(&pbr_dbg_zebra,
-			       "%s: \tType: %d: vrf: %d, ifindex: %d gate: %s",
+			       "%s: \tType: %d: vrf: %d, ifindex: %d gate: %pI4",
 			       __func__, nhr.nexthops[i].type,
 			       nhr.nexthops[i].vrf_id, nhr.nexthops[i].ifindex,
-			       inet_ntoa(nhr.nexthops[i].gate.ipv4));
+			       &nhr.nexthops[i].gate.ipv4);
 		}
 	}
 

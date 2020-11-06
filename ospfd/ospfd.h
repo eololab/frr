@@ -355,6 +355,22 @@ struct ospf {
 	/* last HELPER exit reason */
 	uint32_t last_exit_reason;
 
+	/* delay timer to process external routes
+	 * with summary address.
+	 */
+	struct thread *t_external_aggr;
+
+	/* delay interval in seconds */
+	unsigned int aggr_delay_interval;
+
+	/* Table of configured Aggregate addresses */
+	struct route_table *rt_aggr_tbl;
+
+	/* used as argument for aggr delay
+	 * timer thread.
+	 */
+	int aggr_action;
+
 	/* MPLS LDP-IGP Sync */
 	struct ldp_sync_info_cmd ldp_sync_cmd;
 
@@ -535,13 +551,7 @@ struct ospf_nbr_nbma {
 #define OSPF_AREA_TIMER_ON(T,F,V) thread_add_timer (master, (F), area, (V), &(T))
 #define OSPF_POLL_TIMER_ON(T,F,V) thread_add_timer (master, (F), nbr_nbma, (V), &(T))
 #define OSPF_POLL_TIMER_OFF(X) OSPF_TIMER_OFF((X))
-#define OSPF_TIMER_OFF(X)                                                      \
-	do {                                                                   \
-		if (X) {                                                       \
-			thread_cancel(X);                                      \
-			(X) = NULL;                                            \
-		}                                                              \
-	} while (0)
+#define OSPF_TIMER_OFF(X) thread_cancel(&(X))
 
 /* Extern variables. */
 extern struct ospf_master *om;
@@ -614,8 +624,6 @@ extern void ospf_area_del_if(struct ospf_area *, struct ospf_interface *);
 
 extern void ospf_interface_area_set(struct ospf *, struct interface *);
 extern void ospf_interface_area_unset(struct ospf *, struct interface *);
-extern bool ospf_interface_area_is_already_set(struct ospf *ospf,
-					       struct interface *ifp);
 
 extern void ospf_route_map_init(void);
 

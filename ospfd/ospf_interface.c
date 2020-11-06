@@ -535,6 +535,7 @@ static struct ospf_if_params *ospf_new_if_params(void)
 	UNSET_IF_PARAM(oip, auth_simple);
 	UNSET_IF_PARAM(oip, auth_crypt);
 	UNSET_IF_PARAM(oip, auth_type);
+	UNSET_IF_PARAM(oip, if_area);
 
 	oip->auth_crypt = list_new();
 
@@ -579,8 +580,8 @@ void ospf_free_if_params(struct interface *ifp, struct in_addr addr)
 	    && !OSPF_IF_PARAM_CONFIGURED(oip, type)
 	    && !OSPF_IF_PARAM_CONFIGURED(oip, auth_simple)
 	    && !OSPF_IF_PARAM_CONFIGURED(oip, auth_type)
-	    && listcount(oip->auth_crypt) == 0
-	    && ntohl(oip->network_lsa_seqnum) != OSPF_INITIAL_SEQUENCE_NUMBER) {
+	    && !OSPF_IF_PARAM_CONFIGURED(oip, if_area)
+	    && listcount(oip->auth_crypt) == 0) {
 		ospf_del_if_params(oip);
 		rn->info = NULL;
 		route_unlock_node(rn);
@@ -977,17 +978,17 @@ struct ospf_vl_data *ospf_vl_lookup(struct ospf *ospf, struct ospf_area *area,
 	struct listnode *node;
 
 	if (IS_DEBUG_OSPF_EVENT) {
-		zlog_debug("%s: Looking for %s", __func__, inet_ntoa(vl_peer));
+		zlog_debug("%s: Looking for %pI4", __func__, &vl_peer);
 		if (area)
-			zlog_debug("%s: in area %s", __func__,
-				   inet_ntoa(area->area_id));
+			zlog_debug("%s: in area %pI4", __func__,
+				   &area->area_id);
 	}
 
 	for (ALL_LIST_ELEMENTS_RO(ospf->vlinks, node, vl_data)) {
 		if (IS_DEBUG_OSPF_EVENT)
-			zlog_debug("%s: VL %s, peer %s", __func__,
+			zlog_debug("%s: VL %s, peer %pI4", __func__,
 				   vl_data->vl_oi->ifp->name,
-				   inet_ntoa(vl_data->vl_peer));
+				   &vl_data->vl_peer);
 
 		if (area
 		    && !IPV4_ADDR_SAME(&vl_data->vl_area_id, &area->area_id))
@@ -1109,9 +1110,9 @@ static int ospf_vl_set_params(struct ospf_area *area,
 	}
 
 	if (IS_DEBUG_OSPF_EVENT)
-		zlog_debug("%s: %s peer address: %s, cost: %d,%schanged",
+		zlog_debug("%s: %s peer address: %pI4, cost: %d,%schanged",
 			   __func__, vl_data->vl_oi->ifp->name,
-			   inet_ntoa(vl_data->peer_addr), voi->output_cost,
+			   &vl_data->peer_addr, voi->output_cost,
 			   (changed ? " " : " un"));
 
 	return changed;
@@ -1128,19 +1129,19 @@ void ospf_vl_up_check(struct ospf_area *area, struct in_addr rid,
 
 	if (IS_DEBUG_OSPF_EVENT) {
 		zlog_debug("ospf_vl_up_check(): Start");
-		zlog_debug("ospf_vl_up_check(): Router ID is %s",
-			   inet_ntoa(rid));
-		zlog_debug("ospf_vl_up_check(): Area is %s",
-			   inet_ntoa(area->area_id));
+		zlog_debug("ospf_vl_up_check(): Router ID is %pI4",
+			   &rid);
+		zlog_debug("ospf_vl_up_check(): Area is %pI4",
+			   &area->area_id);
 	}
 
 	for (ALL_LIST_ELEMENTS_RO(ospf->vlinks, node, vl_data)) {
 		if (IS_DEBUG_OSPF_EVENT) {
-			zlog_debug("%s: considering VL, %s in area %s",
+			zlog_debug("%s: considering VL, %s in area %pI4",
 				   __func__, vl_data->vl_oi->ifp->name,
-				   inet_ntoa(vl_data->vl_area_id));
-			zlog_debug("%s: peer ID: %s", __func__,
-				   inet_ntoa(vl_data->vl_peer));
+				   &vl_data->vl_area_id);
+			zlog_debug("%s: peer ID: %pI4", __func__,
+				   &vl_data->vl_peer);
 		}
 
 		if (IPV4_ADDR_SAME(&vl_data->vl_peer, &rid)
@@ -1198,8 +1199,8 @@ int ospf_full_virtual_nbrs(struct ospf_area *area)
 {
 	if (IS_DEBUG_OSPF_EVENT) {
 		zlog_debug(
-			"counting fully adjacent virtual neighbors in area %s",
-			inet_ntoa(area->area_id));
+			"counting fully adjacent virtual neighbors in area %pI4",
+			&area->area_id);
 		zlog_debug("there are %d of them", area->full_vls);
 	}
 
@@ -1276,6 +1277,9 @@ void ospf_if_interface(struct interface *ifp)
 static int ospf_ifp_create(struct interface *ifp)
 {
 	struct ospf *ospf = NULL;
+	struct ospf_if_params *params;
+	struct route_node *rn;
+	uint32_t count = 0;
 
 	if (IS_DEBUG_OSPF(zebra, ZEBRA_INTERFACE))
 		zlog_debug(
@@ -1296,6 +1300,19 @@ static int ospf_ifp_create(struct interface *ifp)
 	ospf = ospf_lookup_by_vrf_id(ifp->vrf_id);
 	if (!ospf)
 		return 0;
+
+	params = IF_DEF_PARAMS(ifp);
+	if (OSPF_IF_PARAM_CONFIGURED(params, if_area))
+		count++;
+
+	for (rn = route_top(IF_OIFS_PARAMS(ifp)); rn; rn = route_next(rn))
+		if ((params = rn->info) && OSPF_IF_PARAM_CONFIGURED(params, if_area))
+			count++;
+
+	if (count > 0) {
+		ospf->if_ospf_cli_count += count;
+		ospf_interface_area_set(ospf, ifp);
+	}
 
 	ospf_if_recalculate_output_cost(ifp);
 
@@ -1362,7 +1379,10 @@ static int ospf_ifp_down(struct interface *ifp)
 
 static int ospf_ifp_destroy(struct interface *ifp)
 {
+	struct ospf *ospf;
+	struct ospf_if_params *params;
 	struct route_node *rn;
+	uint32_t count = 0;
 
 	if (IS_DEBUG_OSPF(zebra, ZEBRA_INTERFACE))
 		zlog_debug(
@@ -1372,6 +1392,22 @@ static int ospf_ifp_destroy(struct interface *ifp)
 			(unsigned long long)ifp->flags, ifp->metric, ifp->mtu);
 
 	hook_call(ospf_if_delete, ifp);
+
+	ospf = ospf_lookup_by_vrf_id(ifp->vrf_id);
+	if (ospf) {
+		params = IF_DEF_PARAMS(ifp);
+		if (OSPF_IF_PARAM_CONFIGURED(params, if_area))
+			count++;
+
+		for (rn = route_top(IF_OIFS_PARAMS(ifp)); rn; rn = route_next(rn))
+			if ((params = rn->info) && OSPF_IF_PARAM_CONFIGURED(params, if_area))
+				count++;
+
+		if (count > 0) {
+			ospf->if_ospf_cli_count -= count;
+			ospf_interface_area_unset(ospf, ifp);
+		}
+	}
 
 	for (rn = route_top(IF_OIFS(ifp)); rn; rn = route_next(rn))
 		if (rn->info)

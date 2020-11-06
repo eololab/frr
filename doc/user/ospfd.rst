@@ -905,59 +905,63 @@ Showing Information
 
 .. _show-ip-ospf:
 
-.. index:: show ip ospf
-.. clicmd:: show ip ospf
+.. index:: show ip ospf [json]
+.. clicmd:: show ip ospf [json]
 
    Show information on a variety of general OSPF and area state and
    configuration information.
 
-.. index:: show ip ospf interface [INTERFACE]
-.. clicmd:: show ip ospf interface [INTERFACE]
+.. index:: show ip ospf interface [INTERFACE] [json]
+.. clicmd:: show ip ospf interface [INTERFACE] [json]
 
    Show state and configuration of OSPF the specified interface, or all
    interfaces if no interface is given.
 
-.. index:: show ip ospf neighbor
-.. clicmd:: show ip ospf neighbor
+.. index:: show ip ospf neighbor [json]
+.. clicmd:: show ip ospf neighbor [json]
 
-.. index:: show ip ospf neighbor INTERFACE
-.. clicmd:: show ip ospf neighbor INTERFACE
+.. index:: show ip ospf neighbor INTERFACE [json]
+.. clicmd:: show ip ospf neighbor INTERFACE [json]
 
-.. index:: show ip ospf neighbor detail
-.. clicmd:: show ip ospf neighbor detail
+.. index:: show ip ospf neighbor detail [json]
+.. clicmd:: show ip ospf neighbor detail [json]
 
-.. index:: show ip ospf neighbor INTERFACE detail
-.. clicmd:: show ip ospf neighbor INTERFACE detail
+.. index:: show ip ospf neighbor INTERFACE detail [json]
+.. clicmd:: show ip ospf neighbor INTERFACE detail [json]
 
-.. index:: show ip ospf database
-.. clicmd:: show ip ospf database
+   Display lsa information of LSDB.
+   Json o/p of this command covers base route information
+   i.e all LSAs except opaque lsa info.
 
-.. index:: show ip ospf database (asbr-summary|external|network|router|summary)
-.. clicmd:: show ip ospf database (asbr-summary|external|network|router|summary)
+.. index:: show ip ospf database [json]
+.. clicmd:: show ip ospf database [json]
 
-.. index:: show ip ospf database (asbr-summary|external|network|router|summary) LINK-STATE-ID
-.. clicmd:: show ip ospf database (asbr-summary|external|network|router|summary) LINK-STATE-ID
+.. index:: show ip ospf database (asbr-summary|external|network|router|summary) [json]
+.. clicmd:: show ip ospf database (asbr-summary|external|network|router|summary) [json]
 
-.. index:: show ip ospf database (asbr-summary|external|network|router|summary) LINK-STATE-ID adv-router ADV-ROUTER
-.. clicmd:: show ip ospf database (asbr-summary|external|network|router|summary) LINK-STATE-ID adv-router ADV-ROUTER
+.. index:: show ip ospf database (asbr-summary|external|network|router|summary) LINK-STATE-ID [json]
+.. clicmd:: show ip ospf database (asbr-summary|external|network|router|summary) LINK-STATE-ID [json]
 
-.. index:: show ip ospf database (asbr-summary|external|network|router|summary) adv-router ADV-ROUTER
-.. clicmd:: show ip ospf database (asbr-summary|external|network|router|summary) adv-router ADV-ROUTER
+.. index:: show ip ospf database (asbr-summary|external|network|router|summary) LINK-STATE-ID adv-router ADV-ROUTER [json]
+.. clicmd:: show ip ospf database (asbr-summary|external|network|router|summary) LINK-STATE-ID adv-router ADV-ROUTER [json]
 
-.. index:: show ip ospf database (asbr-summary|external|network|router|summary) LINK-STATE-ID self-originate
-.. clicmd:: show ip ospf database (asbr-summary|external|network|router|summary) LINK-STATE-ID self-originate
+.. index:: show ip ospf database (asbr-summary|external|network|router|summary) adv-router ADV-ROUTER [json]
+.. clicmd:: show ip ospf database (asbr-summary|external|network|router|summary) adv-router ADV-ROUTER [json]
 
-.. index:: show ip ospf database (asbr-summary|external|network|router|summary) self-originate
-.. clicmd:: show ip ospf database (asbr-summary|external|network|router|summary) self-originate
+.. index:: show ip ospf database (asbr-summary|external|network|router|summary) LINK-STATE-ID self-originate [json]
+.. clicmd:: show ip ospf database (asbr-summary|external|network|router|summary) LINK-STATE-ID self-originate [json]
 
-.. index:: show ip ospf database max-age
-.. clicmd:: show ip ospf database max-age
+.. index:: show ip ospf database (asbr-summary|external|network|router|summary) self-originate [json]
+.. clicmd:: show ip ospf database (asbr-summary|external|network|router|summary) self-originate [json]
 
-.. index:: show ip ospf database self-originate
-.. clicmd:: show ip ospf database self-originate
+.. index:: show ip ospf database max-age [json]
+.. clicmd:: show ip ospf database max-age [json]
 
-.. index:: show ip ospf route
-.. clicmd:: show ip ospf route
+.. index:: show ip ospf database self-originate [json]
+.. clicmd:: show ip ospf database self-originate [json]
+
+.. index:: show ip ospf route [json]
+.. clicmd:: show ip ospf route [json]
 
    Show the OSPF routing table, as determined by the most recent SPF
    calculation.
@@ -1177,6 +1181,41 @@ dataplane.
    self router. Optional JSON output can be obtained by appending 'json' to the
    end of the command.
 
+External Route Summarisation
+============================
+This feature summarises originated external LSAs(Type-5 and Type-7).
+Summary Route will be originated on-behalf of all matched external LSAs.
+
+.. index:: [no] summary-address A.B.C.D/M [tag (1-4294967295)]
+.. clicmd:: [no] summary-address A.B.C.D/M [tag (1-4294967295)]
+
+   This command enable/disables summarisation for the configured address
+   range. Tag is the optional parameter. If tag configured Summary route
+   will be originated with the configured tag.
+
+.. index:: [no] summary-address A.B.C.D/M no-advertise
+.. clicmd:: [no] summary-address A.B.C.D/M no-advertise
+
+   This command to ensure not advertise the summary lsa for the matched
+   external LSAs.
+
+.. index:: aggregation timer (5-1800)
+.. clicmd:: aggregation timer (5-1800)
+
+   Configure aggregation delay timer interval. Summarisation starts only after
+   this delay timer expiry. By default, delay interval is 5 secs.
+
+.. index:: no aggregation timer
+.. clicmd:: no aggregation timer
+
+   Resetting the aggregation delay interval to default value.
+
+.. index:: show ip ospf [vrf <NAME|all>] summary-address [detail] [json]
+.. clicmd:: show ip ospf [vrf <NAME|all>] summary-address [detail] [json]
+
+   Show configuration for display all configured summary routes with
+   matching external LSA information.
+
 Debugging OSPF
 ==============
 
@@ -1278,6 +1317,11 @@ Debugging OSPF
 
 .. index:: show debugging ospf
 .. clicmd:: show debugging ospf
+
+.. index:: [no] debug ospf lsa aggregate
+.. clicmd:: [no] debug ospf lsa aggregate
+
+   Debug commnd to enable/disable external route summarisation specific debugs.
 
 OSPF Configuration Examples
 ===========================

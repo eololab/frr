@@ -51,6 +51,14 @@ struct zebra_evpn_es {
 #define ZEBRA_EVPNES_OPER_UP       (1 << 2) /* es->ifp is oper-up */
 #define ZEBRA_EVPNES_READY_FOR_BGP (1 << 3) /* ready to be sent to BGP */
 #define ZEBRA_EVPNES_NHG_ACTIVE    (1 << 4) /* NHG has been installed */
+/* This flag is only applicable to local ESs and signifies that this
+ * VTEP is not the DF
+ */
+#define ZEBRA_EVPNES_NON_DF (1 << 5)
+/* When the ES becomes a bridge port we need to activate the BUM non-DF
+ * filter, SPH filter and backup NHG for fast-failover
+ */
+#define ZEBRA_EVPNES_BR_PORT (1 << 6)
 
 	/* memory used for adding the es to zmh_info->es_rb_tree */
 	RB_ENTRY(zebra_evpn_es) rb_node;
@@ -74,6 +82,11 @@ struct zebra_evpn_es {
 
 	/* Nexthop group id */
 	uint32_t nhg_id;
+
+	/* Preference config for BUM-DF election. Sent to BGP and
+	 * advertised via the ESR
+	 */
+	uint16_t df_pref;
 };
 RB_HEAD(zebra_es_rb_head, zebra_evpn_es);
 RB_PROTOTYPE(zebra_es_rb_head, zebra_evpn_es, rb_node, zebra_es_rb_cmp);
@@ -115,11 +128,20 @@ struct zebra_evpn_es_vtep {
 	struct zebra_evpn_es *es; /* parent ES */
 	struct in_addr vtep_ip;
 
+	uint32_t flags;
+	/* Rxed Type-4 route from this VTEP */
+#define ZEBRA_EVPNES_VTEP_RXED_ESR (1 << 0)
+#define ZEBRA_EVPNES_VTEP_DEL_IN_PROG (1 << 1)
+
 	/* memory used for adding the entry to es->es_vtep_list */
 	struct listnode es_listnode;
 
 	/* MAC nexthop */
 	uint32_t nh_id;
+
+	/* Parameters for DF election */
+	uint8_t df_alg;
+	uint32_t df_pref;
 
 	/* XXX - maintain a backpointer to zebra_vtep_t */
 };
@@ -173,10 +195,25 @@ struct zebra_evpn_mh_info {
 #define EVPN_NHG_ID_TYPE_BIT (2 << EVPN_NH_ID_TYPE_POS)
 
 	/* XXX - re-visit the default hold timer value */
-#define EVPN_MH_MAC_HOLD_TIME_DEF (18 * 60)
-	long mac_hold_time;
-#define EVPN_MH_NEIGH_HOLD_TIME_DEF (18 * 60)
-	long neigh_hold_time;
+	int mac_hold_time;
+#define ZEBRA_EVPN_MH_MAC_HOLD_TIME_DEF (18 * 60)
+	int neigh_hold_time;
+#define ZEBRA_EVPN_MH_NEIGH_HOLD_TIME_DEF (18 * 60)
+
+	/* During this period access ports will be held in a protodown
+	 * state
+	 */
+	int startup_delay_time; /* seconds */
+#define ZEBRA_EVPN_MH_STARTUP_DELAY_DEF (3 * 60)
+	struct thread *startup_delay_timer;
+
+	/* Number of configured uplinks */
+	uint32_t uplink_cfg_cnt;
+	/* Number of operationally-up uplinks */
+	uint32_t uplink_oper_up_cnt;
+
+	/* These protodown bits are inherited by all ES bonds */
+	enum protodown_reasons protodown_rc;
 };
 
 static inline bool zebra_evpn_mac_is_es_local(zebra_mac_t *mac)
@@ -235,5 +272,17 @@ extern int zebra_evpn_mh_mac_holdtime_update(struct vty *vty,
 void zebra_evpn_mh_config_write(struct vty *vty);
 int zebra_evpn_mh_neigh_holdtime_update(struct vty *vty,
 		uint32_t duration, bool set_default);
+void zebra_evpn_es_local_br_port_update(struct zebra_if *zif);
+extern int zebra_evpn_mh_startup_delay_update(struct vty *vty,
+					      uint32_t duration,
+					      bool set_default);
+extern void zebra_evpn_mh_uplink_oper_update(struct zebra_if *zif);
+extern void zebra_evpn_mh_update_protodown_bond_mbr(struct zebra_if *zif,
+						    bool clear,
+						    const char *caller);
+extern bool zebra_evpn_is_es_bond(struct interface *ifp);
+extern bool zebra_evpn_is_es_bond_member(struct interface *ifp);
+extern void zebra_evpn_mh_print(struct vty *vty);
+extern void zebra_evpn_mh_json(json_object *json);
 
 #endif /* _ZEBRA_EVPN_MH_H */

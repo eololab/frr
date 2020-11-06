@@ -1005,6 +1005,12 @@ Route Aggregation-IPv4 Address Family
    Configure the aggregated address to only be created when the routes MED
    match, otherwise no aggregated route will be created.
 
+.. index:: aggregate-address A.B.C.D/M suppress-map NAME
+.. clicmd:: aggregate-address A.B.C.D/M suppress-map NAME
+
+   Similar to `summary-only`, but will only suppress more specific routes that
+   are matched by the selected route-map.
+
 .. index:: no aggregate-address A.B.C.D/M
 .. clicmd:: no aggregate-address A.B.C.D/M
 
@@ -1063,6 +1069,11 @@ Route Aggregation-IPv6 Address Family
    Configure the aggregated address to only be created when the routes MED
    match, otherwise no aggregated route will be created.
 
+.. index:: aggregate-address X:X::X:X/M suppress-map NAME
+.. clicmd:: aggregate-address X:X::X:X/M suppress-map NAME
+
+   Similar to `summary-only`, but will only suppress more specific routes that
+   are matched by the selected route-map.
 
 .. index:: no aggregate-address X:X::X:X/M
 .. clicmd:: no aggregate-address X:X::X:X/M
@@ -2563,6 +2574,113 @@ the same behavior of using same next-hop and RMAC values.
 Enables or disables advertise-pip feature, specifiy system-IP and/or system-MAC
 parameters.
 
+EVPN Multihoming
+^^^^^^^^^^^^^^^^
+
+All-Active Multihoming is used for redundancy and load sharing. Servers
+are attached to two or more PEs and the links are bonded (link-aggregation).
+This group of server links is referred to as an Ethernet Segment.
+
+Ethernet Segments
+"""""""""""""""""
+An Ethernet Segment can be configured by specifying a system-MAC and a
+local discriminatior against the bond interface on the PE (via zebra) -
+
+.. index:: [no] evpn mh es-id [(1-16777215)$es_lid]
+.. clicmd:: [no] evpn mh es-id [(1-16777215)$es_lid]
+
+.. index:: [no$no] evpn mh es-sys-mac [X:X:X:X:X:X$mac]
+.. clicmd:: [no$no] evpn mh es-sys-mac [X:X:X:X:X:X$mac]
+
+The sys-mac and local discriminator are used for generating a 10-byte,
+Type-3 Ethernet Segment ID.
+
+Type-1 (EAS-per-ES and EAD-per-EVI) routes are used to advertise the locally
+attached ESs and to learn off remote ESs in the network. Local Type-2/MAC-IP
+routes are also advertised with a destination ESI allowing for MAC-IP syncing
+between Ethernet Segment peers.
+Reference: RFC 7432, RFC 8365
+
+EVPN-MH is intended as a replacement for MLAG or Anycast VTEPs. In
+multihoming each PE has an unique VTEP address which requires the introduction
+of a new dataplane construct, MAC-ECMP. Here a MAC/FDB entry can point to a
+list of remote PEs/VTEPs.
+
+BUM handling
+""""""""""""
+Type-4 (ESR) routes are used for Designated Forwarder (DF) election. DFs
+forward BUM traffic received via the overlay network. This implementation
+uses a preference based DF election specified by draft-ietf-bess-evpn-pref-df.
+The DF preference is configurable per-ES (via zebra) -
+
+.. index:: [no] evpn mh es-df-pref [(1-16777215)$df_pref]
+.. clicmd:: [no] evpn mh es-df-pref [(1-16777215)$df_pref]
+
+BUM traffic is rxed via the overlay by all PEs attached to a server but
+only the DF can forward the de-capsulated traffic to the access port. To
+accomodate that non-DF filters are installed in the dataplane to drop
+the traffic.
+
+Similarly traffic received from ES peers via the overlay cannot be forwarded
+to the server. This is split-horizon-filtering with local bias.
+
+Fast failover
+"""""""""""""
+As the primary purpose of EVPN-MH is redundancy keeping the failover efficient
+is a recurring theme in the implementation. Following sub-features have
+been introduced for the express purpose of efficient ES failovers.
+
+- Layer-2 Nexthop Groups and MAC-ECMP via L2NHG.
+
+- Host routes (for symmetric IRB) via L3NHG.
+  On dataplanes that support layer3 nexthop groups the feature can be turned
+  on via the following BGP config -
+
+.. index:: [no$no] use-es-l3nhg
+.. clicmd:: [no$no] use-es-l3nhg
+
+- Local ES (MAC/Neigh) failover via ES-redirect.
+  On dataplanes that do not have support for ES-redirect the feature can be
+  turned off via the following zebra config -
+
+.. index:: [no$no] evpn mh redirect-off
+.. clicmd:: [no$no] evpn mh redirect-off
+
+Uplink/Core tracking
+""""""""""""""""""""
+When all the underlay links go down the PE no longer has access to the VxLAN
++overlay. To prevent blackholing of traffic the server/ES links are
+protodowned on the PE. A link can be setup for uplink tracking via the
+following zebra configuration -
+
+.. index:: [no] evpn mh uplink
+.. clicmd:: [no] evpn mh uplink
+
+Proxy advertisements
+""""""""""""""""""""
+To handle hitless upgrades support for proxy advertisement has been added
+as specified by draft-rbickhart-evpn-ip-mac-proxy-adv. This allows a PE
+(say PE1) to proxy advertise a MAC-IP rxed from an ES peer (say PE2). When
+the ES peer (PE2) goes down PE1 continues to advertise hosts learnt from PE2
+for a holdtime during which it attempts to establish local reachability of
+the host. This holdtime is configurable via the following zebra commands -
+
+.. index:: [no$no] evpn mh neigh-holdtime (0-86400)$duration
+.. clicmd:: [no$no] evpn mh neigh-holdtime (0-86400)$duration
+
+.. index:: [no$no] evpn mh mac-holdtime (0-86400)$duration
+.. clicmd:: [no$no] evpn mh mac-holdtime (0-86400)$duration
+
+Startup delay
+"""""""""""""
+When a switch is rebooted we wait for a brief period to allow the underlay
+and EVPN network to converge before enabling the ESs. For this duration the
+ES bonds are held protodown. The startup delay is configurable via the
+following zebra command -
+
+.. index:: [no] evpn mh startup-delay(0-3600)$duration
+.. clicmd:: [no] evpn mh startup-delay(0-3600)$duration
+
 +Support with VRF network namespace backend
 +^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 It is possible to separate overlay networks contained in VXLAN interfaces from
@@ -2583,6 +2701,194 @@ in the same network namespace, as below example illustrates:
 This makes it possible to separate not only layer 3 networks like VRF-lite networks.
 Also, VRF netns based make possible to separate layer 2 networks on separate VRF
 instances.
+
+.. _bgp-conditional-advertisement:
+
+BGP Conditional Advertisement
+-----------------------------
+The BGP conditional advertisement feature uses the ``non-exist-map`` or the
+``exist-map`` and the ``advertise-map`` keywords of the neighbor advertise-map
+command in order to track routes by the route prefix.
+
+``non-exist-map``
+   1. If a route prefix is not present in the output of non-exist-map command,
+      then advertise the route specified by the advertise-map command.
+
+   2. If a route prefix is present in the output of non-exist-map command,
+      then do not advertise the route specified by the addvertise-map command.
+
+``exist-map``
+   1. If a route prefix is present in the output of exist-map command,
+      then advertise the route specified by the advertise-map command.
+
+   2. If a route prefix is not present in the output of exist-map command,
+      then do not advertise the route specified by the advertise-map command.
+
+This feature is useful when some prefixes are advertised to one of its peers
+only if the information from the other peer is not present (due to failure in
+peering session or partial reachability etc).
+
+The conditional BGP announcements are sent in addition to the normal
+announcements that a BGP router sends to its peer.
+
+The conditional advertisement process is triggered by the BGP scanner process,
+which runs every 60 seconds. This means that the maximum time for the conditional
+advertisement to take effect is 60 seconds. The conditional advertisement can take
+effect depending on when the tracked route is removed from the BGP table and
+when the next instance of the BGP scanner occurs.
+
+.. index:: [no] neighbor A.B.C.D advertise-map NAME [exist-map|non-exist-map] NAME
+.. clicmd:: [no] neighbor A.B.C.D advertise-map NAME [exist-map|non-exist-map] NAME
+
+   This command enables BGP scanner process to monitor routes specified by
+   exist-map or non-exist-map command in BGP table and conditionally advertises
+   the routes specified by advertise-map command.
+
+Sample Configuration
+^^^^^^^^^^^^^^^^^^^^^
+.. code-block:: frr
+
+   interface enp0s9
+    ip address 10.10.10.2/24
+   !
+   interface enp0s10
+    ip address 10.10.20.2/24
+   !
+   interface lo
+    ip address 203.0.113.1/32
+   !
+   router bgp 2
+    bgp log-neighbor-changes
+    no bgp ebgp-requires-policy
+    neighbor 10.10.10.1 remote-as 1
+    neighbor 10.10.20.3 remote-as 3
+    !
+    address-family ipv4 unicast
+     neighbor 10.10.10.1 soft-reconfiguration inbound
+     neighbor 10.10.20.3 soft-reconfiguration inbound
+     neighbor 10.10.20.3 advertise-map ADV-MAP non-exist-map EXIST-MAP
+    exit-address-family
+   !
+   ip prefix-list DEFAULT seq 5 permit 192.0.2.5/32
+   ip prefix-list DEFAULT seq 10 permit 192.0.2.1/32
+   ip prefix-list EXIST seq 5 permit 10.10.10.10/32
+   ip prefix-list DEFAULT-ROUTE seq 5 permit 0.0.0.0/0
+   ip prefix-list IP1 seq 5 permit 10.139.224.0/20
+   !
+   bgp community-list standard DC-ROUTES seq 5 permit 64952:3008
+   bgp community-list standard DC-ROUTES seq 10 permit 64671:501
+   bgp community-list standard DC-ROUTES seq 15 permit 64950:3009
+   bgp community-list standard DEFAULT-ROUTE seq 5 permit 65013:200
+   !
+   route-map ADV-MAP permit 10
+    match ip address prefix-list IP1
+   !
+   route-map ADV-MAP permit 20
+    match community DC-ROUTES
+   !
+   route-map EXIST-MAP permit 10
+    match community DEFAULT-ROUTE
+    match ip address prefix-list DEFAULT-ROUTE
+   !
+
+Sample Output
+^^^^^^^^^^^^^
+
+When default route is present in R2'2 BGP table, 10.139.224.0/20 and 192.0.2.1/32 are not advertised to R3.
+
+.. code-block:: frr
+
+   Router2# show ip bgp
+   BGP table version is 20, local router ID is 203.0.113.1, vrf id 0
+   Default local pref 100, local AS 2
+   Status codes:  s suppressed, d damped, h history, * valid, > best, = multipath,
+                  i internal, r RIB-failure, S Stale, R Removed
+   Nexthop codes: @NNN nexthop's vrf id, < announce-nh-self
+   Origin codes:  i - IGP, e - EGP, ? - incomplete
+
+      Network          Next Hop            Metric LocPrf Weight Path
+   *> 0.0.0.0/0        10.10.10.1               0             0 1 i
+   *> 10.139.224.0/20  10.10.10.1               0             0 1 ?
+   *> 192.0.2.1/32     10.10.10.1               0             0 1 i
+   *> 192.0.2.5/32     10.10.10.1               0             0 1 i
+
+   Displayed  4 routes and 4 total paths
+   Router2# show ip bgp neighbors 10.10.20.3
+
+   !--- Output suppressed.
+
+   For address family: IPv4 Unicast
+   Update group 7, subgroup 7
+   Packet Queue length 0
+   Inbound soft reconfiguration allowed
+   Community attribute sent to this neighbor(all)
+   Condition NON_EXIST, Condition-map *EXIST-MAP, Advertise-map *ADV-MAP, status: Withdraw
+   0 accepted prefixes
+
+   !--- Output suppressed.
+
+   Router2# show ip bgp neighbors 10.10.20.3 advertised-routes
+   BGP table version is 20, local router ID is 203.0.113.1, vrf id 0
+   Default local pref 100, local AS 2
+   Status codes:  s suppressed, d damped, h history, * valid, > best, = multipath,
+               i internal, r RIB-failure, S Stale, R Removed
+   Nexthop codes: @NNN nexthop's vrf id, < announce-nh-self
+   Origin codes:  i - IGP, e - EGP, ? - incomplete
+
+      Network          Next Hop            Metric LocPrf Weight Path
+   *> 0.0.0.0/0        0.0.0.0                                0 1 i
+   *> 192.0.2.5/32     0.0.0.0                                0 1 i
+
+   Total number of prefixes 2
+
+When default route is not present in R2'2 BGP table, 10.139.224.0/20 and 192.0.2.1/32 are advertised to R3.
+
+.. code-block:: frr
+
+   Router2# show ip bgp
+   BGP table version is 21, local router ID is 203.0.113.1, vrf id 0
+   Default local pref 100, local AS 2
+   Status codes:  s suppressed, d damped, h history, * valid, > best, = multipath,
+                  i internal, r RIB-failure, S Stale, R Removed
+   Nexthop codes: @NNN nexthop's vrf id, < announce-nh-self
+   Origin codes:  i - IGP, e - EGP, ? - incomplete
+
+      Network          Next Hop            Metric LocPrf Weight Path
+   *> 10.139.224.0/20  10.10.10.1               0             0 1 ?
+   *> 192.0.2.1/32     10.10.10.1               0             0 1 i
+   *> 192.0.2.5/32     10.10.10.1               0             0 1 i
+
+   Displayed  3 routes and 3 total paths
+
+   Router2# show ip bgp neighbors 10.10.20.3
+
+   !--- Output suppressed.
+
+   For address family: IPv4 Unicast
+   Update group 7, subgroup 7
+   Packet Queue length 0
+   Inbound soft reconfiguration allowed
+   Community attribute sent to this neighbor(all)
+   Condition NON_EXIST, Condition-map *EXIST-MAP, Advertise-map *ADV-MAP, status: Advertise
+   0 accepted prefixes
+
+   !--- Output suppressed.
+
+   Router2# show ip bgp neighbors 10.10.20.3 advertised-routes
+   BGP table version is 21, local router ID is 203.0.113.1, vrf id 0
+   Default local pref 100, local AS 2
+   Status codes:  s suppressed, d damped, h history, * valid, > best, = multipath,
+                  i internal, r RIB-failure, S Stale, R Removed
+   Nexthop codes: @NNN nexthop's vrf id, < announce-nh-self
+   Origin codes:  i - IGP, e - EGP, ? - incomplete
+
+      Network          Next Hop            Metric LocPrf Weight Path
+   *> 10.139.224.0/20  0.0.0.0                                0 1 ?
+   *> 192.0.2.1/32     0.0.0.0                                0 1 i
+   *> 192.0.2.5/32     0.0.0.0                                0 1 i
+
+   Total number of prefixes 3
+   Router2#
 
 .. _bgp-debugging:
 

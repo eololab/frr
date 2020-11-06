@@ -124,21 +124,20 @@ int ospf6_serv_sock(struct ospf6 *ospf6)
 }
 
 /* ospf6 set socket option */
-int ospf6_sso(ifindex_t ifindex, struct in6_addr *group, int option)
+int ospf6_sso(ifindex_t ifindex, struct in6_addr *group, int option, int sockfd)
 {
 	struct ipv6_mreq mreq6;
 	int ret;
 	int bufsize = (8 * 1024 * 1024);
 
-	if (ospf6->fd == -1)
+	if (sockfd == -1)
 		return -1;
 
 	assert(ifindex);
 	mreq6.ipv6mr_interface = ifindex;
 	memcpy(&mreq6.ipv6mr_multiaddr, group, sizeof(struct in6_addr));
 
-	ret = setsockopt(ospf6->fd, IPPROTO_IPV6, option, &mreq6,
-			 sizeof(mreq6));
+	ret = setsockopt(sockfd, IPPROTO_IPV6, option, &mreq6, sizeof(mreq6));
 	if (ret < 0) {
 		flog_err_sys(
 			EC_LIB_SOCKET,
@@ -147,8 +146,8 @@ int ospf6_sso(ifindex_t ifindex, struct in6_addr *group, int option)
 		return ret;
 	}
 
-	setsockopt_so_sendbuf(ospf6->fd, bufsize);
-	setsockopt_so_recvbuf(ospf6->fd, bufsize);
+	setsockopt_so_sendbuf(sockfd, bufsize);
+	setsockopt_so_recvbuf(sockfd, bufsize);
 
 	return 0;
 }
@@ -171,7 +170,7 @@ static int iov_totallen(struct iovec *iov)
 }
 
 int ospf6_sendmsg(struct in6_addr *src, struct in6_addr *dst,
-		  ifindex_t *ifindex, struct iovec *message, int ospf6_sock)
+		  ifindex_t ifindex, struct iovec *message, int ospf6_sock)
 {
 	int retval;
 	struct msghdr smsghdr;
@@ -184,7 +183,6 @@ int ospf6_sendmsg(struct in6_addr *src, struct in6_addr *dst,
 	struct sockaddr_in6 dst_sin6;
 
 	assert(dst);
-	assert(*ifindex);
 
 	memset(&cmsgbuf, 0, sizeof(cmsgbuf));
 	scmsgp = (struct cmsghdr *)&cmsgbuf;
@@ -192,7 +190,7 @@ int ospf6_sendmsg(struct in6_addr *src, struct in6_addr *dst,
 	memset(&dst_sin6, 0, sizeof(struct sockaddr_in6));
 
 	/* source address */
-	pktinfo->ipi6_ifindex = *ifindex;
+	pktinfo->ipi6_ifindex = ifindex;
 	if (src)
 		memcpy(&pktinfo->ipi6_addr, src, sizeof(struct in6_addr));
 	else
@@ -204,7 +202,7 @@ int ospf6_sendmsg(struct in6_addr *src, struct in6_addr *dst,
 	dst_sin6.sin6_len = sizeof(struct sockaddr_in6);
 #endif /*SIN6_LEN*/
 	memcpy(&dst_sin6.sin6_addr, dst, sizeof(struct in6_addr));
-	dst_sin6.sin6_scope_id = *ifindex;
+	dst_sin6.sin6_scope_id = ifindex;
 
 	/* send control msg */
 	scmsgp->cmsg_level = IPPROTO_IPV6;
@@ -223,7 +221,8 @@ int ospf6_sendmsg(struct in6_addr *src, struct in6_addr *dst,
 
 	retval = sendmsg(ospf6_sock, &smsghdr, 0);
 	if (retval != iov_totallen(message))
-		zlog_warn("sendmsg failed: ifindex: %d: %s (%d)", *ifindex,
+		zlog_warn("sendmsg failed: source: %pI6 Dest: %pI6 ifindex: %d: %s (%d)",
+			  src, dst, ifindex,
 			  safe_strerror(errno), errno);
 
 	return retval;

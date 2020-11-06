@@ -1069,6 +1069,9 @@ void if_up(struct interface *ifp)
 
 	if (zif->es_info.es)
 		zebra_evpn_es_if_oper_state_change(zif, true /*up*/);
+
+	if (zif->flags & ZIF_FLAG_EVPN_MH_UPLINK)
+		zebra_evpn_mh_uplink_oper_update(zif);
 }
 
 /* Interface goes down.  We have to manage different behavior of based
@@ -1105,6 +1108,9 @@ void if_down(struct interface *ifp)
 
 	if (zif->es_info.es)
 		zebra_evpn_es_if_oper_state_change(zif, false /*up*/);
+
+	if (zif->flags & ZIF_FLAG_EVPN_MH_UPLINK)
+		zebra_evpn_mh_uplink_oper_update(zif);
 
 	/* Notify to the protocol daemons. */
 	zebra_interface_down_update(ifp);
@@ -1156,6 +1162,18 @@ void zebra_if_update_all_links(void)
 		if (!ifp)
 			continue;
 		zif = ifp->info;
+		/* update bond-member to bond linkages */
+		if ((IS_ZEBRA_IF_BOND_SLAVE(ifp))
+		    && (zif->bondslave_info.bond_ifindex != IFINDEX_INTERNAL)
+		    && !zif->bondslave_info.bond_if) {
+			if (IS_ZEBRA_DEBUG_EVPN_MH_ES || IS_ZEBRA_DEBUG_KERNEL)
+				zlog_debug("bond mbr %s map to bond %d",
+					   zif->ifp->name,
+					   zif->bondslave_info.bond_ifindex);
+			zebra_l2_map_slave_to_bond(zif, ifp->vrf_id);
+		}
+
+		/* update SVI linkages */
 		if ((zif->link_ifindex != IFINDEX_INTERNAL) && !zif->link) {
 			zif->link = if_lookup_by_index_per_ns(ns,
 							 zif->link_ifindex);
@@ -1382,6 +1400,34 @@ static void ifs_dump_brief_vty(struct vty *vty, struct vrf *vrf)
 	vty_out(vty, "\n");
 }
 
+const char *zebra_protodown_rc_str(enum protodown_reasons protodown_rc,
+				   char *pd_buf, uint32_t pd_buf_len)
+{
+	bool first = true;
+
+	pd_buf[0] = '\0';
+
+	strlcat(pd_buf, "(", pd_buf_len);
+
+	if (protodown_rc & ZEBRA_PROTODOWN_EVPN_STARTUP_DELAY) {
+		if (first)
+			first = false;
+		else
+			strlcat(pd_buf, ",", pd_buf_len);
+		strlcat(pd_buf, "startup-delay", pd_buf_len);
+	}
+
+	if (protodown_rc & ZEBRA_PROTODOWN_EVPN_UPLINK_DOWN) {
+		if (!first)
+			strlcat(pd_buf, ",", pd_buf_len);
+		strlcat(pd_buf, "uplinks-down", pd_buf_len);
+	}
+
+	strlcat(pd_buf, ")", pd_buf_len);
+
+	return pd_buf;
+}
+
 /* Interface's information print out to vty interface. */
 static void if_dump_vty(struct vty *vty, struct interface *ifp)
 {
@@ -1391,6 +1437,7 @@ static void if_dump_vty(struct vty *vty, struct interface *ifp)
 	struct route_node *rn;
 	struct zebra_if *zebra_if;
 	struct vrf *vrf;
+	char pd_buf[ZEBRA_PROTODOWN_RC_STR_LEN];
 
 	zebra_if = ifp->info;
 
@@ -1494,14 +1541,14 @@ static void if_dump_vty(struct vty *vty, struct interface *ifp)
 		vxlan_info = &zebra_if->l2info.vxl;
 		vty_out(vty, "  VxLAN Id %u", vxlan_info->vni);
 		if (vxlan_info->vtep_ip.s_addr != INADDR_ANY)
-			vty_out(vty, " VTEP IP: %s",
-				inet_ntoa(vxlan_info->vtep_ip));
+			vty_out(vty, " VTEP IP: %pI4",
+				&vxlan_info->vtep_ip);
 		if (vxlan_info->access_vlan)
 			vty_out(vty, " Access VLAN Id %u\n",
 				vxlan_info->access_vlan);
 		if (vxlan_info->mcast_grp.s_addr != INADDR_ANY)
-			vty_out(vty, "  Mcast Group %s",
-					inet_ntoa(vxlan_info->mcast_grp));
+			vty_out(vty, "  Mcast Group %pI4",
+					&vxlan_info->mcast_grp);
 		if (vxlan_info->ifindex_link &&
 		    (vxlan_info->link_nsid != NS_UNKNOWN)) {
 				struct interface *ifp;
@@ -1545,6 +1592,14 @@ static void if_dump_vty(struct vty *vty, struct interface *ifp)
 	}
 
 	zebra_evpn_if_es_print(vty, zebra_if);
+	vty_out(vty, "  protodown: %s",
+		(zebra_if->flags & ZIF_FLAG_PROTODOWN) ? "on" : "off");
+	if (zebra_if->protodown_rc)
+		vty_out(vty, " rc: %s\n",
+			zebra_protodown_rc_str(zebra_if->protodown_rc, pd_buf,
+					       sizeof(pd_buf)));
+	else
+		vty_out(vty, "\n");
 
 	if (zebra_if->link_ifindex != IFINDEX_INTERNAL) {
 		if (zebra_if->link)
@@ -1607,8 +1662,8 @@ static void if_dump_vty(struct vty *vty, struct interface *ifp)
 			vty_out(vty, "    Utilized Bandwidth %g (Byte/s)\n",
 				iflp->use_bw);
 		if (IS_PARAM_SET(iflp, LP_RMT_AS))
-			vty_out(vty, "    Neighbor ASBR IP: %s AS: %u \n",
-				inet_ntoa(iflp->rmt_ip), iflp->rmt_as);
+			vty_out(vty, "    Neighbor ASBR IP: %pI4 AS: %u \n",
+				&iflp->rmt_ip, iflp->rmt_as);
 	}
 
 	hook_call(zebra_if_extra_info, vty, ifp);
@@ -3496,7 +3551,7 @@ static int link_params_config_write(struct vty *vty, struct interface *ifp)
 	if (IS_PARAM_SET(iflp, LP_USE_BW))
 		vty_out(vty, "  use-bw %g\n", iflp->use_bw);
 	if (IS_PARAM_SET(iflp, LP_RMT_AS))
-		vty_out(vty, "  neighbor %s as %u\n", inet_ntoa(iflp->rmt_ip),
+		vty_out(vty, "  neighbor %pI4 as %u\n", &iflp->rmt_ip,
 			iflp->rmt_as);
 	vty_out(vty, "  exit-link-params\n");
 	return 0;

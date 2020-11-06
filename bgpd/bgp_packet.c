@@ -63,6 +63,7 @@
 #include "bgpd/bgp_io.h"
 #include "bgpd/bgp_keepalives.h"
 #include "bgpd/bgp_flowspec.h"
+#include "bgpd/bgp_trace.h"
 
 DEFINE_HOOK(bgp_packet_dump,
 		(struct peer *peer, uint8_t type, bgp_size_t size,
@@ -402,12 +403,13 @@ int bgp_generate_updgrp_packets(struct thread *thread)
 	/*
 	 * The code beyond this part deals with update packets, proceed only
 	 * if peer is Established and updates are not on hold (as part of
-	 * update-delay post processing).
+	 * update-delay processing).
 	 */
 	if (peer->status != Established)
 		return 0;
 
-	if (peer->bgp->main_peers_update_hold)
+	if ((peer->bgp->main_peers_update_hold)
+	    || bgp_update_delay_active(peer->bgp))
 		return 0;
 
 	if (peer->t_routeadv)
@@ -1781,6 +1783,9 @@ static int bgp_update_receive(struct peer *peer, bgp_size_t size)
 
 	peer->update_time = bgp_clock();
 
+	/* Notify BGP Conditional advertisement scanner process */
+	peer->advmap_table_change = true;
+
 	return Receive_UPDATE_message;
 }
 
@@ -2366,6 +2371,7 @@ int bgp_process_packet(struct thread *thread)
 		 */
 		switch (type) {
 		case BGP_MSG_OPEN:
+			frrtrace(2, frr_bgp, open_process, peer, size);
 			atomic_fetch_add_explicit(&peer->open_in, 1,
 						  memory_order_relaxed);
 			mprc = bgp_open_receive(peer, size);
@@ -2376,6 +2382,7 @@ int bgp_process_packet(struct thread *thread)
 					__func__, peer->host);
 			break;
 		case BGP_MSG_UPDATE:
+			frrtrace(2, frr_bgp, update_process, peer, size);
 			atomic_fetch_add_explicit(&peer->update_in, 1,
 						  memory_order_relaxed);
 			peer->readtime = monotime(NULL);
@@ -2387,6 +2394,7 @@ int bgp_process_packet(struct thread *thread)
 					__func__, peer->host);
 			break;
 		case BGP_MSG_NOTIFY:
+			frrtrace(2, frr_bgp, notification_process, peer, size);
 			atomic_fetch_add_explicit(&peer->notify_in, 1,
 						  memory_order_relaxed);
 			mprc = bgp_notify_receive(peer, size);
@@ -2397,6 +2405,7 @@ int bgp_process_packet(struct thread *thread)
 					__func__, peer->host);
 			break;
 		case BGP_MSG_KEEPALIVE:
+			frrtrace(2, frr_bgp, keepalive_process, peer, size);
 			peer->readtime = monotime(NULL);
 			atomic_fetch_add_explicit(&peer->keepalive_in, 1,
 						  memory_order_relaxed);
@@ -2409,6 +2418,7 @@ int bgp_process_packet(struct thread *thread)
 			break;
 		case BGP_MSG_ROUTE_REFRESH_NEW:
 		case BGP_MSG_ROUTE_REFRESH_OLD:
+			frrtrace(2, frr_bgp, refresh_process, peer, size);
 			atomic_fetch_add_explicit(&peer->refresh_in, 1,
 						  memory_order_relaxed);
 			mprc = bgp_route_refresh_receive(peer, size);
@@ -2419,6 +2429,7 @@ int bgp_process_packet(struct thread *thread)
 					__func__, peer->host);
 			break;
 		case BGP_MSG_CAPABILITY:
+			frrtrace(2, frr_bgp, capability_process, peer, size);
 			atomic_fetch_add_explicit(&peer->dynamic_cap_in, 1,
 						  memory_order_relaxed);
 			mprc = bgp_capability_receive(peer, size);

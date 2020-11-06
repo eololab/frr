@@ -304,8 +304,8 @@ static void show_nexthop_detail_helper(struct vty *vty,
 	switch (nexthop->type) {
 	case NEXTHOP_TYPE_IPV4:
 	case NEXTHOP_TYPE_IPV4_IFINDEX:
-		vty_out(vty, " %s",
-			inet_ntoa(nexthop->gate.ipv4));
+		vty_out(vty, " %pI4",
+			&nexthop->gate.ipv4);
 		if (nexthop->ifindex)
 			vty_out(vty, ", via %s",
 				ifindex2ifname(
@@ -508,7 +508,7 @@ static void show_route_nexthop_helper(struct vty *vty,
 	switch (nexthop->type) {
 	case NEXTHOP_TYPE_IPV4:
 	case NEXTHOP_TYPE_IPV4_IFINDEX:
-		vty_out(vty, " via %s", inet_ntoa(nexthop->gate.ipv4));
+		vty_out(vty, " via %pI4", &nexthop->gate.ipv4);
 		if (nexthop->ifindex)
 			vty_out(vty, ", %s",
 				ifindex2ifname(nexthop->ifindex,
@@ -636,7 +636,8 @@ static void show_nexthop_json_helper(json_object *json_nexthop,
 	case NEXTHOP_TYPE_IPV4_IFINDEX:
 		json_object_string_add(
 			json_nexthop, "ip",
-			inet_ntoa(nexthop->gate.ipv4));
+			inet_ntop(AF_INET, &nexthop->gate.ipv4,
+				  buf, sizeof(buf)));
 		json_object_string_add(json_nexthop, "afi",
 				       "ipv4");
 
@@ -1404,6 +1405,7 @@ struct nhe_show_context {
 	struct vty *vty;
 	vrf_id_t vrf_id;
 	afi_t afi;
+	int type;
 };
 
 static int nhe_show_walker(struct hash_bucket *bucket, void *arg)
@@ -1419,6 +1421,9 @@ static int nhe_show_walker(struct hash_bucket *bucket, void *arg)
 	if (ctx->vrf_id && nhe->vrf_id != ctx->vrf_id)
 		goto done;
 
+	if (ctx->type && nhe->type != ctx->type)
+		goto done;
+
 	show_nexthop_group_out(ctx->vty, nhe);
 
 done:
@@ -1426,14 +1431,15 @@ done:
 }
 
 static void show_nexthop_group_cmd_helper(struct vty *vty,
-					  struct zebra_vrf *zvrf,
-					  afi_t afi)
+					  struct zebra_vrf *zvrf, afi_t afi,
+					  int type)
 {
 	struct nhe_show_context ctx;
 
 	ctx.vty = vty;
 	ctx.afi = afi;
 	ctx.vrf_id = zvrf->vrf->vrf_id;
+	ctx.type = type;
 
 	hash_walk(zrouter.nhgs_id, nhe_show_walker, &ctx);
 }
@@ -1492,7 +1498,7 @@ DEFPY (show_interface_nexthop_group,
 
 DEFPY (show_nexthop_group,
        show_nexthop_group_cmd,
-       "show nexthop-group rib <(0-4294967295)$id|[singleton <ip$v4|ipv6$v6>] [vrf <NAME$vrf_name|all$vrf_all>]>",
+       "show nexthop-group rib <(0-4294967295)$id|[singleton <ip$v4|ipv6$v6>] [<kernel|zebra|bgp|sharp>$type_str] [vrf <NAME$vrf_name|all$vrf_all>]>",
        SHOW_STR
        "Show Nexthop Groups\n"
        "RIB information\n"
@@ -1500,11 +1506,16 @@ DEFPY (show_nexthop_group,
        "Show Singleton Nexthop-Groups\n"
        IP_STR
        IP6_STR
+       "Kernel (not installed via the zebra RIB)\n"
+       "Zebra (implicitly created by zebra)\n"
+       "Border Gateway Protocol (BGP)\n"
+       "Super Happy Advanced Routing Protocol (SHARP)\n"
        VRF_FULL_CMD_HELP_STR)
 {
 
 	struct zebra_vrf *zvrf = NULL;
 	afi_t afi = AFI_UNSPEC;
+	int type = 0;
 
 	if (id)
 		return show_nexthop_group_id_cmd_helper(vty, id);
@@ -1513,6 +1524,14 @@ DEFPY (show_nexthop_group,
 		afi = AFI_IP;
 	else if (v6)
 		afi = AFI_IP6;
+
+	if (type_str) {
+		type = proto_redistnum((afi ? afi : AFI_IP), type_str);
+		if (type < 0) {
+			/* assume zebra */
+			type = ZEBRA_ROUTE_NHG;
+		}
+	}
 
 	if (!vrf_is_backend_netns() && (vrf_name || vrf_all)) {
 		vty_out(vty,
@@ -1531,7 +1550,7 @@ DEFPY (show_nexthop_group,
 				continue;
 
 			vty_out(vty, "VRF: %s\n", vrf->name);
-			show_nexthop_group_cmd_helper(vty, zvrf, afi);
+			show_nexthop_group_cmd_helper(vty, zvrf, afi, type);
 		}
 
 		return CMD_SUCCESS;
@@ -1548,7 +1567,7 @@ DEFPY (show_nexthop_group,
 		return CMD_WARNING;
 	}
 
-	show_nexthop_group_cmd_helper(vty, zvrf, afi);
+	show_nexthop_group_cmd_helper(vty, zvrf, afi, type);
 
 	return CMD_SUCCESS;
 }
@@ -1747,9 +1766,11 @@ DEFPY (show_route,
 		if (vrf_name)
 			VRF_GET_ID(vrf_id, vrf_name, !!json);
 		vrf = vrf_lookup_by_id(vrf_id);
-		if (vrf)
-			zvrf = vrf->info;
-		if (!vrf || !zvrf)
+		if (!vrf)
+			return CMD_SUCCESS;
+
+		zvrf = vrf->info;
+		if (!zvrf)
 			return CMD_SUCCESS;
 
 		if (table_all)
@@ -2414,6 +2435,20 @@ DEFPY (evpn_mh_neigh_holdtime,
 			no ? true : false);
 }
 
+DEFPY (evpn_mh_startup_delay,
+       evpn_mh_startup_delay_cmd,
+       "[no] evpn mh startup-delay(0-3600)$duration",
+       NO_STR
+       "EVPN\n"
+       "Multihoming\n"
+       "Startup delay\n"
+       "duration in seconds\n")
+{
+
+	return zebra_evpn_mh_startup_delay_update(vty, duration,
+			no ? true : false);
+}
+
 DEFUN (default_vrf_vni_mapping,
        default_vrf_vni_mapping_cmd,
        "vni " CMD_VNI_RANGE "[prefix-routes-only]",
@@ -2595,7 +2630,7 @@ DEFUN (show_evpn_global,
 
 DEFPY(show_evpn_es,
       show_evpn_es_cmd,
-      "show evpn es [NAME$esi_str] [json$json] [detail$detail]",
+      "show evpn es [NAME$esi_str|detail$detail] [json$json]",
       SHOW_STR
       "EVPN\n"
       "Ethernet Segment\n"
@@ -2624,14 +2659,14 @@ DEFPY(show_evpn_es,
 
 DEFPY(show_evpn_es_evi,
       show_evpn_es_evi_cmd,
-      "show evpn es-evi [vni (1-16777215)$vni] [json$json] [detail$detail]",
+      "show evpn es-evi [vni (1-16777215)$vni] [detail$detail] [json$json]",
       SHOW_STR
       "EVPN\n"
       "Ethernet Segment per EVI\n"
       "VxLAN Network Identifier\n"
       "VNI\n"
-      JSON_STR
-      "Detailed information\n")
+      "Detailed information\n"
+      JSON_STR)
 {
 	bool uj = !!json;
 	bool ud = !!detail;
@@ -2646,13 +2681,13 @@ DEFPY(show_evpn_es_evi,
 
 DEFPY(show_evpn_access_vlan,
       show_evpn_access_vlan_cmd,
-      "show evpn access-vlan [(1-4094)$vid] [json$json] [detail$detail]",
+      "show evpn access-vlan [(1-4094)$vid | detail$detail] [json$json]",
       SHOW_STR
       "EVPN\n"
       "Access VLANs\n"
       "VLAN ID\n"
-      JSON_STR
-      "Detailed information\n")
+      "Detailed information\n"
+      JSON_STR)
 {
 	bool uj = !!json;
 
@@ -3971,6 +4006,7 @@ void zebra_vty_init(void)
 
 	install_element(CONFIG_NODE, &evpn_mh_mac_holdtime_cmd);
 	install_element(CONFIG_NODE, &evpn_mh_neigh_holdtime_cmd);
+	install_element(CONFIG_NODE, &evpn_mh_startup_delay_cmd);
 	install_element(CONFIG_NODE, &default_vrf_vni_mapping_cmd);
 	install_element(CONFIG_NODE, &no_default_vrf_vni_mapping_cmd);
 	install_element(VRF_NODE, &vrf_vni_mapping_cmd);

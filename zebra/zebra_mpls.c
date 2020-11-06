@@ -331,7 +331,6 @@ static void fec_evaluate(struct zebra_vrf *zvrf)
 	zebra_fec_t *fec;
 	uint32_t old_label, new_label;
 	int af;
-	char buf[BUFSIZ];
 
 	for (af = AFI_IP; af < AFI_MAX; af++) {
 		if (zvrf->fec_table[af] == NULL)
@@ -348,9 +347,6 @@ static void fec_evaluate(struct zebra_vrf *zvrf)
 			    || fec->label_index == MPLS_INVALID_LABEL_INDEX)
 				continue;
 
-			if (IS_ZEBRA_DEBUG_MPLS)
-				prefix2str(&rn->p, buf, BUFSIZ);
-
 			/* Save old label, determine new label. */
 			old_label = fec->label;
 			new_label =
@@ -364,8 +360,8 @@ static void fec_evaluate(struct zebra_vrf *zvrf)
 
 			if (IS_ZEBRA_DEBUG_MPLS)
 				zlog_debug(
-					"Update fec %s new label %u upon label block",
-					buf, new_label);
+					"Update fec %pRN new label %u upon label block",
+					rn, new_label);
 
 			fec->label = new_label;
 			fec_update_clients(fec);
@@ -494,8 +490,7 @@ static void fec_print(zebra_fec_t *fec, struct vty *vty)
 	char buf[BUFSIZ];
 
 	rn = fec->rn;
-	prefix2str(&rn->p, buf, BUFSIZ);
-	vty_out(vty, "%s\n", buf);
+	vty_out(vty, "%pRN\n", rn);
 	vty_out(vty, "  Label: %s", label2str(fec->label, buf, BUFSIZ));
 	if (fec->label_index != MPLS_INVALID_LABEL_INDEX)
 		vty_out(vty, ", Label Index: %u", fec->label_index);
@@ -1502,7 +1497,8 @@ static json_object *nhlfe_json(zebra_nhlfe_t *nhlfe)
 	case NEXTHOP_TYPE_IPV4:
 	case NEXTHOP_TYPE_IPV4_IFINDEX:
 		json_object_string_add(json_nhlfe, "nexthop",
-				       inet_ntoa(nexthop->gate.ipv4));
+				       inet_ntop(AF_INET, &nexthop->gate.ipv4,
+						 buf, sizeof(buf)));
 		break;
 	case NEXTHOP_TYPE_IPV6:
 	case NEXTHOP_TYPE_IPV6_IFINDEX:
@@ -1560,7 +1556,7 @@ static void nhlfe_print(zebra_nhlfe_t *nhlfe, struct vty *vty,
 	switch (nexthop->type) {
 	case NEXTHOP_TYPE_IPV4:
 	case NEXTHOP_TYPE_IPV4_IFINDEX:
-		vty_out(vty, "  via %s", inet_ntoa(nexthop->gate.ipv4));
+		vty_out(vty, "  via %pI4", &nexthop->gate.ipv4);
 		if (nexthop->ifindex)
 			vty_out(vty, " dev %s",
 				ifindex2ifname(nexthop->ifindex,
@@ -2243,7 +2239,6 @@ int zebra_mpls_fec_register(struct zebra_vrf *zvrf, struct prefix *p,
 {
 	struct route_table *table;
 	zebra_fec_t *fec;
-	char buf[BUFSIZ];
 	bool new_client;
 	bool label_change = false;
 	uint32_t old_label;
@@ -2254,14 +2249,11 @@ int zebra_mpls_fec_register(struct zebra_vrf *zvrf, struct prefix *p,
 	if (!table)
 		return -1;
 
-	if (IS_ZEBRA_DEBUG_MPLS)
-		prefix2str(p, buf, BUFSIZ);
-
 	if (label != MPLS_INVALID_LABEL && have_label_index) {
 		flog_err(
 			EC_ZEBRA_FEC_LABEL_INDEX_LABEL_CONFLICT,
-			"Rejecting FEC register for %s with both label %u and Label Index %u specified, client %s",
-			buf, label, label_index,
+			"Rejecting FEC register for %pFX with both label %u and Label Index %u specified, client %s",
+			p, label, label_index,
 			zebra_route_string(client->proto));
 		return -1;
 	}
@@ -2273,8 +2265,8 @@ int zebra_mpls_fec_register(struct zebra_vrf *zvrf, struct prefix *p,
 		if (!fec) {
 			flog_err(
 				EC_ZEBRA_FEC_ADD_FAILED,
-				"Failed to add FEC %s upon register, client %s",
-				buf, zebra_route_string(client->proto));
+				"Failed to add FEC %pFX upon register, client %s",
+				p, zebra_route_string(client->proto));
 			return -1;
 		}
 
@@ -2300,7 +2292,7 @@ int zebra_mpls_fec_register(struct zebra_vrf *zvrf, struct prefix *p,
 		listnode_add(fec->client_list, client);
 
 	if (IS_ZEBRA_DEBUG_MPLS)
-		zlog_debug("FEC %s label%s %u %s by client %s%s", buf,
+		zlog_debug("FEC %pFX label%s %u %s by client %s%s", p,
 			   have_label_index ? " index" : "",
 			   have_label_index ? label_index : label,
 			   new_client ? "registered" : "updated",
@@ -2351,14 +2343,10 @@ int zebra_mpls_fec_unregister(struct zebra_vrf *zvrf, struct prefix *p,
 {
 	struct route_table *table;
 	zebra_fec_t *fec;
-	char buf[BUFSIZ];
 
 	table = zvrf->fec_table[family2afi(PREFIX_FAMILY(p))];
 	if (!table)
 		return -1;
-
-	if (IS_ZEBRA_DEBUG_MPLS)
-		prefix2str(p, buf, BUFSIZ);
 
 	fec = fec_find(table, p);
 	if (!fec) {
@@ -2371,7 +2359,7 @@ int zebra_mpls_fec_unregister(struct zebra_vrf *zvrf, struct prefix *p,
 	listnode_delete(fec->client_list, client);
 
 	if (IS_ZEBRA_DEBUG_MPLS)
-		zlog_debug("FEC %s unregistered by client %s", buf,
+		zlog_debug("FEC %pFX unregistered by client %s", p,
 			   zebra_route_string(client->proto));
 
 	/* If not a configured entry, delete the FEC if no other clients. Before
@@ -2512,16 +2500,12 @@ int zebra_mpls_static_fec_add(struct zebra_vrf *zvrf, struct prefix *p,
 {
 	struct route_table *table;
 	zebra_fec_t *fec;
-	char buf[BUFSIZ];
 	mpls_label_t old_label;
 	int ret = 0;
 
 	table = zvrf->fec_table[family2afi(PREFIX_FAMILY(p))];
 	if (!table)
 		return -1;
-
-	if (IS_ZEBRA_DEBUG_MPLS)
-		prefix2str(p, buf, BUFSIZ);
 
 	/* Update existing FEC or create a new one. */
 	fec = fec_find(table, p);
@@ -2535,7 +2519,7 @@ int zebra_mpls_static_fec_add(struct zebra_vrf *zvrf, struct prefix *p,
 		}
 
 		if (IS_ZEBRA_DEBUG_MPLS)
-			zlog_debug("Add fec %s label %u", buf, in_label);
+			zlog_debug("Add fec %pFX label %u", p, in_label);
 	} else {
 		fec->flags |= FEC_FLAG_CONFIGURED;
 		if (fec->label == in_label)
@@ -2545,7 +2529,7 @@ int zebra_mpls_static_fec_add(struct zebra_vrf *zvrf, struct prefix *p,
 		/* Label change, update clients. */
 		old_label = fec->label;
 		if (IS_ZEBRA_DEBUG_MPLS)
-			zlog_debug("Update fec %s new label %u", buf, in_label);
+			zlog_debug("Update fec %pFX new label %u", p, in_label);
 
 		fec->label = in_label;
 		fec_update_clients(fec);
@@ -2568,7 +2552,6 @@ int zebra_mpls_static_fec_del(struct zebra_vrf *zvrf, struct prefix *p)
 	struct route_table *table;
 	zebra_fec_t *fec;
 	mpls_label_t old_label;
-	char buf[BUFSIZ];
 
 	table = zvrf->fec_table[family2afi(PREFIX_FAMILY(p))];
 	if (!table)
@@ -2576,9 +2559,8 @@ int zebra_mpls_static_fec_del(struct zebra_vrf *zvrf, struct prefix *p)
 
 	fec = fec_find(table, p);
 	if (!fec) {
-		prefix2str(p, buf, BUFSIZ);
 		flog_err(EC_ZEBRA_FEC_RM_FAILED,
-			 "Failed to find FEC %s upon delete", buf);
+			 "Failed to find FEC %pFX upon delete", p);
 		return -1;
 	}
 

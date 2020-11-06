@@ -36,14 +36,21 @@
 #include "zebra/rt.h"
 #include "zebra/debug.h"
 #include "zebra/zebra_pbr.h"
+#include "printfrr.h"
 
 /* Memory type for context blocks */
 DEFINE_MTYPE_STATIC(ZEBRA, DP_CTX, "Zebra DPlane Ctx")
+DEFINE_MTYPE_STATIC(ZEBRA, DP_INTF, "Zebra DPlane Intf")
 DEFINE_MTYPE_STATIC(ZEBRA, DP_PROV, "Zebra DPlane Provider")
 
 #ifndef AOK
 #  define AOK 0
 #endif
+
+/* Control for collection of extra interface info with route updates; a plugin
+ * can enable the extra info via a dplane api.
+ */
+static bool dplane_collect_extra_intf_info;
 
 /* Enable test dataplane provider */
 /*#define DPLANE_TEST_PROVIDER 1 */
@@ -81,6 +88,18 @@ struct dplane_nexthop_info {
 	struct nexthop_group ng;
 	struct nh_grp nh_grp[MULTIPATH_NUM];
 	uint8_t nh_grp_count;
+};
+
+/*
+ * Optional extra info about interfaces used in route updates' nexthops.
+ */
+struct dplane_intf_extra {
+	vrf_id_t vrf_id;
+	uint32_t ifindex;
+	uint32_t flags;
+	uint32_t status;
+
+	TAILQ_ENTRY(dplane_intf_extra) link;
 };
 
 /*
@@ -126,8 +145,8 @@ struct dplane_route_info {
 	struct nexthop_group zd_old_ng;
 	struct nexthop_group old_backup_ng;
 
-	/* TODO -- use fixed array of nexthops, to avoid mallocs? */
-
+	/* Optional list of extra interface info */
+	TAILQ_HEAD(dp_intf_extra_q, dplane_intf_extra) intf_extra_q;
 };
 
 /*
@@ -146,6 +165,17 @@ struct dplane_pw_info {
 	struct nexthop_group nhg;
 
 	union pw_protocol_fields fields;
+};
+
+/*
+ * Bridge port info for the dataplane
+ */
+struct dplane_br_port_info {
+	uint32_t sph_filter_cnt;
+	struct in_addr sph_filters[ES_VTEP_MAX_CNT];
+	/* DPLANE_BR_PORT_XXX - see zebra_dplane.h*/
+	uint32_t flags;
+	uint32_t backup_nhg_id;
 };
 
 /*
@@ -272,6 +302,7 @@ struct zebra_dplane_ctx {
 		struct dplane_route_info rinfo;
 		zebra_lsp_t lsp;
 		struct dplane_pw_info pw;
+		struct dplane_br_port_info br_port;
 		struct dplane_intf_info intf;
 		struct dplane_mac_info macinfo;
 		struct dplane_neigh_info neigh;
@@ -390,6 +421,9 @@ static struct zebra_dplane_globals {
 	_Atomic uint32_t dg_pws_in;
 	_Atomic uint32_t dg_pw_errors;
 
+	_Atomic uint32_t dg_br_port_in;
+	_Atomic uint32_t dg_br_port_errors;
+
 	_Atomic uint32_t dg_intf_addrs_in;
 	_Atomic uint32_t dg_intf_addr_errors;
 
@@ -491,6 +525,8 @@ void dplane_enable_sys_route_notifs(void)
  */
 static void dplane_ctx_free_internal(struct zebra_dplane_ctx *ctx)
 {
+	struct dplane_intf_extra *if_extra, *if_tmp;
+
 	/*
 	 * Some internal allocations may need to be freed, depending on
 	 * the type of info captured in the ctx.
@@ -531,6 +567,14 @@ static void dplane_ctx_free_internal(struct zebra_dplane_ctx *ctx)
 			nexthops_free(ctx->u.rinfo.old_backup_ng.nexthop);
 
 			ctx->u.rinfo.old_backup_ng.nexthop = NULL;
+		}
+
+		/* Optional extra interface info */
+		TAILQ_FOREACH_SAFE(if_extra, &ctx->u.rinfo.intf_extra_q,
+				   link, if_tmp) {
+			TAILQ_REMOVE(&ctx->u.rinfo.intf_extra_q, if_extra,
+				     link);
+			XFREE(MTYPE_DP_INTF, if_extra);
 		}
 
 		break;
@@ -610,6 +654,7 @@ static void dplane_ctx_free_internal(struct zebra_dplane_ctx *ctx)
 	case DPLANE_OP_RULE_DELETE:
 	case DPLANE_OP_RULE_UPDATE:
 	case DPLANE_OP_NEIGH_DISCOVER:
+	case DPLANE_OP_BR_PORT_UPDATE:
 	case DPLANE_OP_NONE:
 		break;
 	}
@@ -801,6 +846,10 @@ const char *dplane_op2str(enum dplane_op_e op)
 		break;
 	case DPLANE_OP_SYS_ROUTE_DELETE:
 		ret = "SYS_ROUTE_DEL";
+		break;
+
+	case DPLANE_OP_BR_PORT_UPDATE:
+		ret = "BR_PORT_UPDATE";
 		break;
 
 	case DPLANE_OP_ADDR_INSTALL:
@@ -1763,10 +1812,80 @@ dplane_ctx_rule_get_old_dst_ip(const struct zebra_dplane_ctx *ctx)
 	return &(ctx->u.rule.old.dst_ip);
 }
 
+uint32_t dplane_ctx_get_br_port_flags(const struct zebra_dplane_ctx *ctx)
+{
+	DPLANE_CTX_VALID(ctx);
+
+	return ctx->u.br_port.flags;
+}
+
+uint32_t
+dplane_ctx_get_br_port_sph_filter_cnt(const struct zebra_dplane_ctx *ctx)
+{
+	DPLANE_CTX_VALID(ctx);
+
+	return ctx->u.br_port.sph_filter_cnt;
+}
+
+const struct in_addr *
+dplane_ctx_get_br_port_sph_filters(const struct zebra_dplane_ctx *ctx)
+{
+	DPLANE_CTX_VALID(ctx);
+
+	return ctx->u.br_port.sph_filters;
+}
+
+uint32_t
+dplane_ctx_get_br_port_backup_nhg_id(const struct zebra_dplane_ctx *ctx)
+{
+	DPLANE_CTX_VALID(ctx);
+
+	return ctx->u.br_port.backup_nhg_id;
+}
+
 /*
  * End of dplane context accessors
  */
 
+/* Optional extra info about interfaces in nexthops - a plugin must enable
+ * this extra info.
+ */
+const struct dplane_intf_extra *
+dplane_ctx_get_intf_extra(const struct zebra_dplane_ctx *ctx)
+{
+	return TAILQ_FIRST(&ctx->u.rinfo.intf_extra_q);
+}
+
+const struct dplane_intf_extra *
+dplane_ctx_intf_extra_next(const struct zebra_dplane_ctx *ctx,
+			   const struct dplane_intf_extra *ptr)
+{
+	return TAILQ_NEXT(ptr, link);
+}
+
+vrf_id_t dplane_intf_extra_get_vrfid(const struct dplane_intf_extra *ptr)
+{
+	return ptr->vrf_id;
+}
+
+uint32_t dplane_intf_extra_get_ifindex(const struct dplane_intf_extra *ptr)
+{
+	return ptr->ifindex;
+}
+
+uint32_t dplane_intf_extra_get_flags(const struct dplane_intf_extra *ptr)
+{
+	return ptr->flags;
+}
+
+uint32_t dplane_intf_extra_get_status(const struct dplane_intf_extra *ptr)
+{
+	return ptr->status;
+}
+
+/*
+ * End of interface extra info accessors
+ */
 
 /*
  * Retrieve the limit on the number of pending, unprocessed updates.
@@ -1835,9 +1954,13 @@ int dplane_ctx_route_init(struct zebra_dplane_ctx *ctx, enum dplane_op_e op,
 	struct zebra_vrf *zvrf;
 	struct nexthop *nexthop;
 	zebra_l3vni_t *zl3vni;
+	const struct interface *ifp;
+	struct dplane_intf_extra *if_extra;
 
 	if (!ctx || !rn || !re)
 		goto done;
+
+	TAILQ_INIT(&ctx->u.rinfo.intf_extra_q);
 
 	ctx->zd_op = op;
 	ctx->zd_status = ZEBRA_DPLANE_REQUEST_SUCCESS;
@@ -1899,6 +2022,27 @@ int dplane_ctx_route_init(struct zebra_dplane_ctx *ctx, enum dplane_op_e op,
 		if (zl3vni && is_l3vni_oper_up(zl3vni)) {
 			nexthop->nh_encap_type = NET_VXLAN;
 			nexthop->nh_encap.vni = zl3vni->vni;
+		}
+
+		/* Optionally capture extra interface info while we're in the
+		 * main zebra pthread - a plugin has to ask for this info.
+		 */
+		if (dplane_collect_extra_intf_info) {
+			ifp = if_lookup_by_index(nexthop->ifindex,
+						 nexthop->vrf_id);
+
+			if (ifp) {
+				if_extra = XCALLOC(
+					MTYPE_DP_INTF,
+					sizeof(struct dplane_intf_extra));
+				if_extra->vrf_id = nexthop->vrf_id;
+				if_extra->ifindex = nexthop->ifindex;
+				if_extra->flags = ifp->flags;
+				if_extra->status = ifp->status;
+
+				TAILQ_INSERT_TAIL(&ctx->u.rinfo.intf_extra_q,
+						  if_extra, link);
+			}
 		}
 	}
 
@@ -2839,6 +2983,80 @@ done:
 }
 
 /*
+ * Enqueue access br_port update.
+ */
+enum zebra_dplane_result
+dplane_br_port_update(const struct interface *ifp, bool non_df,
+		      uint32_t sph_filter_cnt,
+		      const struct in_addr *sph_filters, uint32_t backup_nhg_id)
+{
+	enum zebra_dplane_result result = ZEBRA_DPLANE_REQUEST_FAILURE;
+	uint32_t flags = 0;
+	int ret;
+	struct zebra_dplane_ctx *ctx = NULL;
+	struct zebra_ns *zns;
+	enum dplane_op_e op = DPLANE_OP_BR_PORT_UPDATE;
+
+	if (non_df)
+		flags |= DPLANE_BR_PORT_NON_DF;
+
+	if (IS_ZEBRA_DEBUG_DPLANE_DETAIL || IS_ZEBRA_DEBUG_EVPN_MH_ES) {
+		uint32_t i;
+		char vtep_str[ES_VTEP_LIST_STR_SZ];
+
+		vtep_str[0] = '\0';
+		for (i = 0; i < sph_filter_cnt; ++i) {
+			snprintfrr(vtep_str + strlen(vtep_str),
+				   sizeof(vtep_str) - strlen(vtep_str), "%pI4 ",
+				   &sph_filters[i]);
+		}
+		zlog_debug(
+			"init br_port ctx %s: ifp %s, flags 0x%x backup_nhg 0x%x sph %s",
+			dplane_op2str(op), ifp->name, flags, backup_nhg_id,
+			vtep_str);
+	}
+
+	ctx = dplane_ctx_alloc();
+
+	ctx->zd_op = op;
+	ctx->zd_status = ZEBRA_DPLANE_REQUEST_SUCCESS;
+	ctx->zd_vrf_id = ifp->vrf_id;
+
+	zns = zebra_ns_lookup(ifp->vrf_id);
+	dplane_ctx_ns_init(ctx, zns, false);
+
+	ctx->zd_ifindex = ifp->ifindex;
+	strlcpy(ctx->zd_ifname, ifp->name, sizeof(ctx->zd_ifname));
+
+	/* Init the br-port-specific data area */
+	memset(&ctx->u.br_port, 0, sizeof(ctx->u.br_port));
+
+	ctx->u.br_port.flags = flags;
+	ctx->u.br_port.backup_nhg_id = backup_nhg_id;
+	ctx->u.br_port.sph_filter_cnt = sph_filter_cnt;
+	memcpy(ctx->u.br_port.sph_filters, sph_filters,
+	       sizeof(ctx->u.br_port.sph_filters[0]) * sph_filter_cnt);
+
+	/* Enqueue for processing on the dplane pthread */
+	ret = dplane_update_enqueue(ctx);
+
+	/* Increment counter */
+	atomic_fetch_add_explicit(&zdplane_info.dg_br_port_in, 1,
+				  memory_order_relaxed);
+
+	if (ret == AOK) {
+		result = ZEBRA_DPLANE_REQUEST_QUEUED;
+	} else {
+		/* Error counter */
+		atomic_fetch_add_explicit(&zdplane_info.dg_br_port_errors, 1,
+					  memory_order_relaxed);
+		dplane_ctx_free(&ctx);
+	}
+
+	return result;
+}
+
+/*
  * Enqueue interface address add for the dataplane.
  */
 enum zebra_dplane_result dplane_intf_addr_set(const struct interface *ifp,
@@ -3209,8 +3427,8 @@ enum zebra_dplane_result dplane_vtep_add(const struct interface *ifp,
 	struct ipaddr addr;
 
 	if (IS_ZEBRA_DEBUG_VXLAN)
-		zlog_debug("Install %s into flood list for VNI %u intf %s(%u)",
-			   inet_ntoa(*ip), vni, ifp->name, ifp->ifindex);
+		zlog_debug("Install %pI4 into flood list for VNI %u intf %s(%u)",
+			   ip, vni, ifp->name, ifp->ifindex);
 
 	SET_IPADDR_V4(&addr);
 	addr.ipaddr_v4 = *ip;
@@ -3234,8 +3452,8 @@ enum zebra_dplane_result dplane_vtep_delete(const struct interface *ifp,
 
 	if (IS_ZEBRA_DEBUG_VXLAN)
 		zlog_debug(
-			"Uninstall %s from flood list for VNI %u intf %s(%u)",
-			inet_ntoa(*ip), vni, ifp->name, ifp->ifindex);
+			"Uninstall %pI4 from flood list for VNI %u intf %s(%u)",
+			ip, vni, ifp->name, ifp->ifindex);
 
 	SET_IPADDR_V4(&addr);
 	addr.ipaddr_v4 = *ip;
@@ -3449,6 +3667,13 @@ int dplane_show_helper(struct vty *vty, bool detailed)
 				    memory_order_relaxed);
 	vty_out(vty, "Rule updates:             %" PRIu64 "\n", incoming);
 	vty_out(vty, "Rule errors:              %" PRIu64 "\n", errs);
+
+	incoming = atomic_load_explicit(&zdplane_info.dg_br_port_in,
+					memory_order_relaxed);
+	errs = atomic_load_explicit(&zdplane_info.dg_br_port_errors,
+				    memory_order_relaxed);
+	vty_out(vty, "Bridge port updates:      %" PRIu64 "\n", incoming);
+	vty_out(vty, "Bridge port errors:       %" PRIu64 "\n", errs);
 
 	return CMD_SUCCESS;
 }
@@ -3834,6 +4059,7 @@ static void kernel_dplane_log_detail(struct zebra_dplane_ctx *ctx)
 	case DPLANE_OP_SYS_ROUTE_DELETE:
 	case DPLANE_OP_ROUTE_NOTIFY:
 	case DPLANE_OP_LSP_NOTIFY:
+	case DPLANE_OP_BR_PORT_UPDATE:
 
 	case DPLANE_OP_NONE:
 		break;
@@ -3938,6 +4164,7 @@ static void kernel_dplane_handle_result(struct zebra_dplane_ctx *ctx)
 	case DPLANE_OP_SYS_ROUTE_DELETE:
 	case DPLANE_OP_ROUTE_NOTIFY:
 	case DPLANE_OP_LSP_NOTIFY:
+	case DPLANE_OP_BR_PORT_UPDATE:
 		break;
 
 	case DPLANE_OP_NONE:
@@ -4106,6 +4333,14 @@ static void dplane_provider_init(void)
 bool dplane_is_in_shutdown(void)
 {
 	return zdplane_info.dg_is_shutdown;
+}
+
+/*
+ * Enable collection of extra info about interfaces in route updates.
+ */
+void dplane_enable_intf_extra_info(void)
+{
+	dplane_collect_extra_intf_info = true;
 }
 
 /*

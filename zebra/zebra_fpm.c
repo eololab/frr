@@ -489,7 +489,7 @@ static inline void zfpm_write_on(void)
  */
 static inline void zfpm_read_off(void)
 {
-	THREAD_READ_OFF(zfpm_g->t_read);
+	thread_cancel(&zfpm_g->t_read);
 }
 
 /*
@@ -497,12 +497,12 @@ static inline void zfpm_read_off(void)
  */
 static inline void zfpm_write_off(void)
 {
-	THREAD_WRITE_OFF(zfpm_g->t_write);
+	thread_cancel(&zfpm_g->t_write);
 }
 
 static inline void zfpm_connect_off(void)
 {
-	THREAD_TIMER_OFF(zfpm_g->t_connect);
+	thread_cancel(&zfpm_g->t_connect);
 }
 
 /*
@@ -1687,7 +1687,7 @@ static void zfpm_stop_stats_timer(void)
 		return;
 
 	zfpm_debug("Stopping existing stats timer");
-	THREAD_TIMER_OFF(zfpm_g->t_stats);
+	thread_cancel(&zfpm_g->t_stats);
 }
 
 /*
@@ -1933,7 +1933,7 @@ static int fpm_remote_srv_write(struct vty *vty)
 	if ((zfpm_g->fpm_server != FPM_DEFAULT_IP
 	     && zfpm_g->fpm_server != INADDR_ANY)
 	    || (zfpm_g->fpm_port != FPM_DEFAULT_PORT && zfpm_g->fpm_port != 0))
-		vty_out(vty, "fpm connection ip %s port %d\n", inet_ntoa(in),
+		vty_out(vty, "fpm connection ip %pI4 port %d\n", &in,
 			zfpm_g->fpm_port);
 
 	return 0;

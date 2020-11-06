@@ -408,8 +408,8 @@ bool ospf_external_default_routemap_apply_walk(struct ospf *ospf,
 
 	if (ret && ei) {
 		if (IS_DEBUG_OSPF_DEFAULT_INFO)
-			zlog_debug("Default originate routemap permit ei: %s",
-				   inet_ntoa(ei->p.prefix));
+			zlog_debug("Default originate routemap permit ei: %pI4",
+				   &ei->p.prefix);
 		return true;
 	}
 
@@ -463,7 +463,7 @@ static int ospf_external_lsa_default_routemap_timer(struct thread *thread)
 	if (ret && !lsa)
 		ospf_external_lsa_originate(ospf, default_ei);
 	else if (ret && lsa && IS_LSA_MAXAGE(lsa))
-		ospf_external_lsa_refresh(ospf, lsa, default_ei, true);
+		ospf_external_lsa_refresh(ospf, lsa, default_ei, true, false);
 	else if (!ret && lsa)
 		ospf_external_lsa_flush(ospf, DEFAULT_ROUTE, &default_ei->p, 0);
 
@@ -850,8 +850,8 @@ static int ospf_external_lsa_originate_check(struct ospf *ospf,
 	/* If prefix is multicast, then do not originate LSA. */
 	if (IN_MULTICAST(htonl(ei->p.prefix.s_addr))) {
 		zlog_info(
-			"LSA[Type5:%s]: Not originate AS-external-LSA, Prefix belongs multicast",
-			inet_ntoa(ei->p.prefix));
+			"LSA[Type5:%pI4]: Not originate AS-external-LSA, Prefix belongs multicast",
+			&ei->p.prefix);
 		return 0;
 	}
 
@@ -943,16 +943,16 @@ static bool ospf_external_lsa_default_routemap_apply(struct ospf *ospf,
 	}
 
 	if (IS_DEBUG_OSPF_DEFAULT_INFO)
-		zlog_debug("Apply default originate routemap on ei: %s cmd: %d",
-			   inet_ntoa(ei->p.prefix), cmd);
+		zlog_debug("Apply default originate routemap on ei: %pI4 cmd: %d",
+			   &ei->p.prefix, cmd);
 
 	ret = ospf_external_info_apply_default_routemap(ospf, ei, default_ei);
 
 	/* If deny then nothing to be done both in add and del case. */
 	if (!ret) {
 		if (IS_DEBUG_OSPF_DEFAULT_INFO)
-			zlog_debug("Default originte routemap deny for ei: %s",
-				   inet_ntoa(ei->p.prefix));
+			zlog_debug("Default originte routemap deny for ei: %pI4",
+				   &ei->p.prefix);
 		return false;
 	}
 
@@ -964,7 +964,7 @@ static bool ospf_external_lsa_default_routemap_apply(struct ospf *ospf,
 		/* If permit and default already advertise then return. */
 		if (lsa && !IS_LSA_MAXAGE(lsa)) {
 			if (IS_DEBUG_OSPF_DEFAULT_INFO)
-				zlog_debug("Defult lsa already originated");
+				zlog_debug("Default lsa already originated");
 			return true;
 		}
 
@@ -973,7 +973,8 @@ static bool ospf_external_lsa_default_routemap_apply(struct ospf *ospf,
 
 		if (lsa && IS_LSA_MAXAGE(lsa))
 			/* Refresh lsa.*/
-			ospf_external_lsa_refresh(ospf, lsa, default_ei, true);
+			ospf_external_lsa_refresh(ospf, lsa, default_ei, true,
+						  false);
 		else
 			/* If permit and default not advertised then advertise.
 			 */
@@ -990,8 +991,8 @@ static bool ospf_external_lsa_default_routemap_apply(struct ospf *ospf,
 
 		if (IS_DEBUG_OSPF_DEFAULT_INFO)
 			zlog_debug(
-				"Running default route-map again as ei: %s deleted",
-				inet_ntoa(ei->p.prefix));
+				"Running default route-map again as ei: %pI4 deleted",
+				&ei->p.prefix);
 		/*
 		 * if this route delete was permitted then we need to check
 		 * there are any other external info which can still trigger
@@ -1180,24 +1181,100 @@ static int ospf_zebra_read_route(ZAPI_CALLBACK_ARGS)
 				if (is_prefix_default(&p))
 					ospf_external_lsa_refresh_default(ospf);
 				else {
-					struct ospf_lsa *current;
+					struct ospf_external_aggr_rt *aggr;
+					struct as_external_lsa *al;
+					struct ospf_lsa *lsa = NULL;
+					struct in_addr mask;
 
-					current = ospf_external_info_find_lsa(
-						ospf, &ei->p);
-					if (!current)
-						ospf_external_lsa_originate(
-							ospf, ei);
-					else {
+					aggr = ospf_external_aggr_match(ospf,
+									&ei->p);
+
+					if (aggr) {
+						/* Check the AS-external-LSA
+						 * should be originated.
+						 */
+						if (!ospf_redistribute_check(
+							    ospf, ei, NULL))
+							return 0;
+
 						if (IS_DEBUG_OSPF(
-							    zebra,
-							    ZEBRA_REDISTRIBUTE))
+							    lsa,
+							    EXTNL_LSA_AGGR))
 							zlog_debug(
-								"ospf_zebra_read_route() : %s refreshing LSA",
-								inet_ntoa(
-									p.prefix));
-						ospf_external_lsa_refresh(
-							ospf, current, ei,
-							LSA_REFRESH_FORCE);
+								"%s: Send Aggreate LSA (%pI4/%d)",
+								__func__,
+								&aggr->p.prefix,
+								aggr->p.prefixlen);
+
+						ospf_originate_summary_lsa(
+							ospf, aggr, ei);
+
+						/* Handling the case where the
+						 * external route prefix
+						 * and aggegate prefix is same
+						 * If same dont flush the
+						 * originated
+						 * external LSA.
+						 */
+						if (prefix_same(
+							    (struct prefix
+								     *)&aggr->p,
+							    (struct prefix *)&ei
+								    ->p))
+							return 0;
+
+						lsa = ospf_external_info_find_lsa(
+							ospf, &ei->p);
+
+						if (lsa) {
+							al = (struct
+							      as_external_lsa *)
+								     lsa->data;
+							masklen2ip(
+								ei->p.prefixlen,
+								&mask);
+
+							if (mask.s_addr
+							    != al->mask.s_addr)
+								return 0;
+
+							ospf_external_lsa_flush(
+								ospf, ei->type,
+								&ei->p, 0);
+						}
+					} else {
+						struct ospf_lsa *current;
+
+						current =
+							ospf_external_info_find_lsa(
+								ospf, &ei->p);
+						if (!current) {
+							/* Check the
+							 * AS-external-LSA
+							 * should be
+							 * originated.
+							 */
+							if (!ospf_redistribute_check(
+								    ospf, ei,
+								    NULL))
+								return 0;
+
+							ospf_external_lsa_originate(
+								ospf, ei);
+						} else {
+							if (IS_DEBUG_OSPF(
+								    zebra,
+								    ZEBRA_REDISTRIBUTE))
+								zlog_debug(
+									"%s: %pI4 refreshing LSA",
+									__func__,
+									&p.prefix);
+							ospf_external_lsa_refresh(
+								ospf, current,
+								ei,
+								LSA_REFRESH_FORCE,
+								false);
+						}
 					}
 				}
 			}
@@ -1211,21 +1288,36 @@ static int ospf_zebra_read_route(ZAPI_CALLBACK_ARGS)
 
 	} else /* if (cmd == ZEBRA_REDISTRIBUTE_ROUTE_DEL) */
 	{
-		/*
-		 * Check if default-information originate is
-		 * with some routemap prefix/access list match.
-		 * Apply before ei is deleted.
-		 */
+		struct ospf_external_aggr_rt *aggr;
+
 		ei = ospf_external_info_lookup(ospf, rt_type, api.instance, &p);
-		if (ei)
+		if (ei == NULL)
+			return 0;
+		else
+			/*
+			 * Check if default-information originate i
+			 * with some routemap prefix/access list match.
+			 * Apply before ei is deleted.
+			 */
 			ospf_external_lsa_default_routemap_apply(ospf, ei, cmd);
 
-		ospf_external_info_delete(ospf, rt_type, api.instance, p);
-		if (is_prefix_default(&p))
-			ospf_external_lsa_refresh_default(ospf);
-		else
-			ospf_external_lsa_flush(ospf, rt_type, &p,
-						ifindex /*, nexthop */);
+		aggr = ospf_external_aggr_match(ospf, &ei->p);
+
+		if (aggr && (ei->aggr_route == aggr)) {
+			ospf_unlink_ei_from_aggr(ospf, aggr, ei);
+
+			ospf_external_info_delete(ospf, rt_type, api.instance,
+						  p);
+		} else {
+			ospf_external_info_delete(ospf, rt_type, api.instance,
+						  p);
+
+			if (is_prefix_default(&p))
+				ospf_external_lsa_refresh_default(ospf);
+			else
+				ospf_external_lsa_flush(ospf, rt_type, &p,
+							ifindex /*, nexthop */);
+		}
 	}
 
 
@@ -1317,32 +1409,80 @@ static int ospf_distribute_list_update_timer(struct thread *thread)
 				if ((ei = rn->info) != NULL) {
 					if (is_prefix_default(&ei->p))
 						default_refresh = 1;
-					else if (
-						(lsa = ospf_external_info_find_lsa(
-							 ospf, &ei->p))) {
-						int force =
-							LSA_REFRESH_IF_CHANGED;
-						/* If this is a MaxAge LSA, we
-						 * need to force refresh it
-						 * because distribute settings
-						 * might have changed and now,
-						 * this LSA needs to be
-						 * originated, not be removed.
-						 * If we don't force refresh it,
-						 * it will remain a MaxAge LSA
-						 * because it will look like it
-						 * hasn't changed. Neighbors
-						 * will not receive updates for
-						 * this LSA.
-						 */
-						if (IS_LSA_MAXAGE(lsa))
-							force = LSA_REFRESH_FORCE;
+					else {
+						struct ospf_external_aggr_rt
+							*aggr;
+						aggr = ospf_external_aggr_match(
+							ospf, &ei->p);
+						if (aggr) {
+							/* Check the
+							 * AS-external-LSA
+							 * should be originated.
+							 */
+							if (!ospf_redistribute_check(
+								    ospf, ei,
+								    NULL)) {
 
-						ospf_external_lsa_refresh(
-							ospf, lsa, ei, force);
-					} else
-						ospf_external_lsa_originate(
-							ospf, ei);
+								ospf_unlink_ei_from_aggr(
+									ospf,
+									aggr,
+									ei);
+								continue;
+							}
+
+							if (IS_DEBUG_OSPF(
+								    lsa,
+								    EXTNL_LSA_AGGR))
+								zlog_debug(
+									"%s: Send Aggregate LSA (%pI4/%d)",
+									__func__,
+									&aggr->p.prefix,
+									aggr->p.prefixlen);
+
+							/* Originate Aggregate
+							 * LSA
+							 */
+							ospf_originate_summary_lsa(
+								ospf, aggr, ei);
+						} else if (
+							(lsa = ospf_external_info_find_lsa(
+								 ospf,
+								 &ei->p))) {
+							int force =
+								LSA_REFRESH_IF_CHANGED;
+							/* If this is a MaxAge
+							 * LSA, we need to
+							 * force refresh it
+							 * because distribute
+							 * settings might have
+							 * changed and now,
+							 * this LSA needs to be
+							 * originated, not be
+							 * removed.
+							 * If we don't force
+							 * refresh it, it will
+							 * remain a MaxAge LSA
+							 * because it will look
+							 * like it hasn't
+							 * changed. Neighbors
+							 * will not receive
+							 * updates for this LSA.
+							 */
+							if (IS_LSA_MAXAGE(lsa))
+								force = LSA_REFRESH_FORCE;
+
+							ospf_external_lsa_refresh(
+								ospf, lsa, ei,
+								force, false);
+						} else {
+							if (!ospf_redistribute_check(
+								    ospf, ei,
+								    NULL))
+								continue;
+							ospf_external_lsa_originate(
+								ospf, ei);
+						}
+					}
 				}
 		}
 	}

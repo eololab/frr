@@ -23,6 +23,7 @@
 #include "prefix.h"
 #include "lib/json.h"
 #include "lib/printfrr.h"
+#include "lib/vxlan.h"
 #include "stream.h"
 
 #include "bgpd/bgpd.h"
@@ -4629,7 +4630,8 @@ DEFPY_HIDDEN(test_es_add,
 			oper_up = false;
 		vtep_ip = bgp->router_id;
 
-		ret = bgp_evpn_local_es_add(bgp, &esi, vtep_ip, oper_up);
+		ret = bgp_evpn_local_es_add(bgp, &esi, vtep_ip, oper_up,
+					    EVPN_MH_DF_PREF_MIN);
 		if (ret == -1) {
 			vty_out(vty, "%%Failed to add ES\n");
 			return CMD_WARNING;
@@ -5295,6 +5297,7 @@ DEFUN (no_bgp_evpn_vrf_rt,
 	if (rt_type == RT_TYPE_IMPORT) {
 		if (!bgp_evpn_rt_matches_existing(bgp->vrf_import_rtl,
 						  ecomdel)) {
+			ecommunity_free(&ecomdel);
 			vty_out(vty,
 				"%% RT specified does not match configuration for this VRF\n");
 			return CMD_WARNING;
@@ -5303,6 +5306,7 @@ DEFUN (no_bgp_evpn_vrf_rt,
 	} else if (rt_type == RT_TYPE_EXPORT) {
 		if (!bgp_evpn_rt_matches_existing(bgp->vrf_export_rtl,
 						  ecomdel)) {
+			ecommunity_free(&ecomdel);
 			vty_out(vty,
 				"%% RT specified does not match configuration for this VRF\n");
 			return CMD_WARNING;
@@ -5324,12 +5328,14 @@ DEFUN (no_bgp_evpn_vrf_rt,
 		}
 
 		if (!found_ecomdel) {
+			ecommunity_free(&ecomdel);
 			vty_out(vty,
 				"%% RT specified does not match configuration for this VRF\n");
 			return CMD_WARNING;
 		}
 	}
 
+	ecommunity_free(&ecomdel);
 	return CMD_SUCCESS;
 }
 
